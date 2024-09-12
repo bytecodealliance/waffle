@@ -1,10 +1,11 @@
 [package]
 name = "waffle"
-version = "0.0.44"
+version = "0.1.0"
 description = "Wasm Analysis Framework For Lightweight Experiments"
 authors = ["Chris Fallin <chris@cfallin.org>"]
 license = "Apache-2.0 WITH LLVM-exception"
 edition = "2018"
+repository = "https://github.com/bytecodealliance/waffle"
 
 [dependencies]
 wasmparser = "0.212"
