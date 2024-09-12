@@ -1526,7 +1526,7 @@ impl Operator {
     pub fn is_store(&self) -> bool {
         // We explicitly match on opcode rather than checking the
         // effects set, beacuse some operators may have `[WriteMem]` or
-        // `[Trap, WriteMem]` but not be a "normal" load. For example,
+        // `[Trap, WriteMem]` but not be a "normal" store. For example,
         // `MemoryFill` writes memory but is not a "normal" store.
         match self {
             Operator::I32Store { .. }
@@ -1547,7 +1547,7 @@ impl Operator {
         }
     }
 
-    /// Edit the `MemoryArg` if present.
+    /// Call `f` on the operator's `MemoryArg`, if it has one.
     pub fn update_memory_arg<F: FnMut(&mut MemoryArg)>(&mut self, mut f: F) {
         match self {
             Operator::I32Load { memory }
