@@ -2,7 +2,7 @@
 
 use crate::entity::EntityRef;
 use crate::ir::{Module, Type, Value};
-use crate::Operator;
+use crate::{MemoryArg, Operator};
 use anyhow::Result;
 use std::borrow::Cow;
 
@@ -1188,28 +1188,28 @@ impl Operator {
             Operator::MemoryCopy { .. } => &[Trap, ReadMem, WriteMem],
             Operator::MemoryFill { .. } => &[Trap, WriteMem],
 
-            Operator::V128Load { .. } => &[ReadMem],
-            Operator::V128Load8x8S { .. } => &[ReadMem],
-            Operator::V128Load8x8U { .. } => &[ReadMem],
-            Operator::V128Load16x4S { .. } => &[ReadMem],
-            Operator::V128Load16x4U { .. } => &[ReadMem],
-            Operator::V128Load32x2S { .. } => &[ReadMem],
-            Operator::V128Load32x2U { .. } => &[ReadMem],
-            Operator::V128Load8Splat { .. } => &[ReadMem],
-            Operator::V128Load16Splat { .. } => &[ReadMem],
-            Operator::V128Load32Splat { .. } => &[ReadMem],
-            Operator::V128Load64Splat { .. } => &[ReadMem],
-            Operator::V128Load32Zero { .. } => &[ReadMem],
-            Operator::V128Load64Zero { .. } => &[ReadMem],
-            Operator::V128Store { .. } => &[WriteMem],
-            Operator::V128Load8Lane { .. } => &[ReadMem],
-            Operator::V128Load16Lane { .. } => &[ReadMem],
-            Operator::V128Load32Lane { .. } => &[ReadMem],
-            Operator::V128Load64Lane { .. } => &[ReadMem],
-            Operator::V128Store8Lane { .. } => &[WriteMem],
-            Operator::V128Store16Lane { .. } => &[WriteMem],
-            Operator::V128Store32Lane { .. } => &[WriteMem],
-            Operator::V128Store64Lane { .. } => &[WriteMem],
+            Operator::V128Load { .. } => &[Trap, ReadMem],
+            Operator::V128Load8x8S { .. } => &[Trap, ReadMem],
+            Operator::V128Load8x8U { .. } => &[Trap, ReadMem],
+            Operator::V128Load16x4S { .. } => &[Trap, ReadMem],
+            Operator::V128Load16x4U { .. } => &[Trap, ReadMem],
+            Operator::V128Load32x2S { .. } => &[Trap, ReadMem],
+            Operator::V128Load32x2U { .. } => &[Trap, ReadMem],
+            Operator::V128Load8Splat { .. } => &[Trap, ReadMem],
+            Operator::V128Load16Splat { .. } => &[Trap, ReadMem],
+            Operator::V128Load32Splat { .. } => &[Trap, ReadMem],
+            Operator::V128Load64Splat { .. } => &[Trap, ReadMem],
+            Operator::V128Load32Zero { .. } => &[Trap, ReadMem],
+            Operator::V128Load64Zero { .. } => &[Trap, ReadMem],
+            Operator::V128Store { .. } => &[Trap, WriteMem],
+            Operator::V128Load8Lane { .. } => &[Trap, ReadMem],
+            Operator::V128Load16Lane { .. } => &[Trap, ReadMem],
+            Operator::V128Load32Lane { .. } => &[Trap, ReadMem],
+            Operator::V128Load64Lane { .. } => &[Trap, ReadMem],
+            Operator::V128Store8Lane { .. } => &[Trap, WriteMem],
+            Operator::V128Store16Lane { .. } => &[Trap, WriteMem],
+            Operator::V128Store32Lane { .. } => &[Trap, WriteMem],
+            Operator::V128Store64Lane { .. } => &[Trap, WriteMem],
 
             Operator::V128Const { .. } => &[],
             Operator::I8x16Shuffle { .. } => &[],
@@ -1468,6 +1468,140 @@ impl Operator {
             SideEffect::ReadMem | SideEffect::WriteMem => true,
             _ => false,
         })
+    }
+
+    /// Is the operator an ordinary memory load?
+    ///
+    /// Note that this does not include all opcodes that read memory
+    /// *state*, such as accessing the size of memory, or that read and
+    /// *also* write memory, such as a memory copy; only "normal" load
+    /// instructions.
+    pub fn is_load(&self) -> bool {
+        // We explicitly match on opcode rather than checking the
+        // effects set, beacuse some operators may have `[ReadMem]` or
+        // `[Trap, ReadMem]` but not be a "normal" load. For example,
+        // `MemorySize` reads memory (or a property of it, anyway) but
+        // is not a "normal" load.
+        match self {
+            Operator::I32Load { .. }
+            | Operator::I64Load { .. }
+            | Operator::F32Load { .. }
+            | Operator::F64Load { .. }
+            | Operator::I32Load8S { .. }
+            | Operator::I32Load8U { .. }
+            | Operator::I32Load16S { .. }
+            | Operator::I32Load16U { .. }
+            | Operator::I64Load8S { .. }
+            | Operator::I64Load8U { .. }
+            | Operator::I64Load16S { .. }
+            | Operator::I64Load16U { .. }
+            | Operator::I64Load32S { .. }
+            | Operator::I64Load32U { .. }
+            | Operator::V128Load { .. }
+            | Operator::V128Load8x8S { .. }
+            | Operator::V128Load8x8U { .. }
+            | Operator::V128Load16x4S { .. }
+            | Operator::V128Load16x4U { .. }
+            | Operator::V128Load32x2S { .. }
+            | Operator::V128Load32x2U { .. }
+            | Operator::V128Load8Splat { .. }
+            | Operator::V128Load16Splat { .. }
+            | Operator::V128Load32Splat { .. }
+            | Operator::V128Load64Splat { .. }
+            | Operator::V128Load32Zero { .. }
+            | Operator::V128Load64Zero { .. }
+            | Operator::V128Load8Lane { .. }
+            | Operator::V128Load16Lane { .. }
+            | Operator::V128Load32Lane { .. }
+            | Operator::V128Load64Lane { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Is the operator an ordinary memory store?
+    ///
+    /// Note that this does not include all opcodes that write memory
+    /// *state*, such as growing memory, or that write and *also* read
+    /// memory, such as a memory copy; only "normal" store instructions.
+    pub fn is_store(&self) -> bool {
+        // We explicitly match on opcode rather than checking the
+        // effects set, beacuse some operators may have `[WriteMem]` or
+        // `[Trap, WriteMem]` but not be a "normal" store. For example,
+        // `MemoryFill` writes memory but is not a "normal" store.
+        match self {
+            Operator::I32Store { .. }
+            | Operator::I64Store { .. }
+            | Operator::F32Store { .. }
+            | Operator::F64Store { .. }
+            | Operator::I32Store8 { .. }
+            | Operator::I32Store16 { .. }
+            | Operator::I64Store8 { .. }
+            | Operator::I64Store16 { .. }
+            | Operator::I64Store32 { .. }
+            | Operator::V128Store { .. }
+            | Operator::V128Store8Lane { .. }
+            | Operator::V128Store16Lane { .. }
+            | Operator::V128Store32Lane { .. }
+            | Operator::V128Store64Lane { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Call `f` on the operator's `MemoryArg`, if it has one.
+    pub fn update_memory_arg<F: FnMut(&mut MemoryArg)>(&mut self, mut f: F) {
+        match self {
+            Operator::I32Load { memory }
+            | Operator::I64Load { memory }
+            | Operator::F32Load { memory }
+            | Operator::F64Load { memory }
+            | Operator::I32Load8S { memory }
+            | Operator::I32Load8U { memory }
+            | Operator::I32Load16S { memory }
+            | Operator::I32Load16U { memory }
+            | Operator::I64Load8S { memory }
+            | Operator::I64Load8U { memory }
+            | Operator::I64Load16S { memory }
+            | Operator::I64Load16U { memory }
+            | Operator::I64Load32S { memory }
+            | Operator::I64Load32U { memory }
+            | Operator::V128Load { memory }
+            | Operator::V128Load8x8S { memory }
+            | Operator::V128Load8x8U { memory }
+            | Operator::V128Load16x4S { memory }
+            | Operator::V128Load16x4U { memory }
+            | Operator::V128Load32x2S { memory }
+            | Operator::V128Load32x2U { memory }
+            | Operator::V128Load8Splat { memory }
+            | Operator::V128Load16Splat { memory }
+            | Operator::V128Load32Splat { memory }
+            | Operator::V128Load64Splat { memory }
+            | Operator::V128Load32Zero { memory }
+            | Operator::V128Load64Zero { memory }
+            | Operator::V128Load8Lane { memory, .. }
+            | Operator::V128Load16Lane { memory, .. }
+            | Operator::V128Load32Lane { memory, .. }
+            | Operator::V128Load64Lane { memory, .. }
+            | Operator::I32Store { memory }
+            | Operator::I64Store { memory }
+            | Operator::F32Store { memory }
+            | Operator::F64Store { memory }
+            | Operator::I32Store8 { memory }
+            | Operator::I32Store16 { memory }
+            | Operator::I64Store8 { memory }
+            | Operator::I64Store16 { memory }
+            | Operator::I64Store32 { memory }
+            | Operator::V128Store { memory }
+            | Operator::V128Store8Lane { memory, .. }
+            | Operator::V128Store16Lane { memory, .. }
+            | Operator::V128Store32Lane { memory, .. }
+            | Operator::V128Store64Lane { memory, .. } => f(memory),
+            _ => {}
+        }
+    }
+
+    /// Is the operator capable of trapping?
+    pub fn can_trap(&self) -> bool {
+        self.effects().contains(&SideEffect::Trap)
     }
 }
 

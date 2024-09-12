@@ -33,6 +33,7 @@ mod scoped_map;
 
 pub use errors::*;
 pub use ir::*;
+pub use op_traits::SideEffect;
 pub use ops::{Ieee32, Ieee64, MemoryArg, Operator};
 
 mod interp;
