@@ -1,4 +1,6 @@
-use super::{Block, FunctionBodyDisplay, Local, Module, Signature, Type, Value, ValueDef};
+use super::{
+    Block, FunctionBodyDisplay, Local, Module, PrintDecorator, Signature, Type, Value, ValueDef,
+};
 use crate::backend::WasmFuncBackend;
 use crate::cfg::CFGInfo;
 use crate::entity::{EntityRef, EntityVec, PerEntity};
@@ -6,7 +8,7 @@ use crate::frontend::parse_body;
 use crate::ir::SourceLoc;
 use crate::passes::basic_opt::OptOptions;
 use crate::pool::{ListPool, ListRef};
-use crate::Operator;
+use crate::{NOPPrintDecorator, Operator};
 use anyhow::Result;
 use fxhash::FxHashMap;
 use std::collections::HashSet;
@@ -443,35 +445,54 @@ impl FunctionBody {
         self.blocks[block].terminator = terminator;
     }
 
+    // In func.rs
+    // pub fn display<'a, PD: PrintDec>(
+    //     &'a self,
+    //     indent: &'a str,
+    //     module: Option<&'a Module>,
+    //     pd: &PD
+    // ) -> FunctionBodyDisplay<'_, PD> { // print decorator lifetime
+    //     FunctionBodyDisplay {
+    //         body: self,
+    //         indent,
+    //         verbose: false,
+    //         module,
+    //     }
+    // }
+
     /// Prety-print this function body. `indent` is prepended to each
     /// line of output. `module`, if provided, allows printing source
     /// locations as comments at each operator.
-    pub fn display<'a>(
+    pub fn display<'a, PD: PrintDecorator>(
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a> {
+        decorator: &'a PD,
+    ) -> FunctionBodyDisplay<'a, PD> {
         FunctionBodyDisplay {
             body: self,
             indent,
             verbose: false,
             module,
+            decorator,
         }
     }
 
     /// Pretty-print this function body, with "verbose" format:
     /// includes all value nodes, even those not listed in a block's
     /// instruction list. (Roughly doubles output size.)
-    pub fn display_verbose<'a>(
+    pub fn display_verbose<'a, PD: PrintDecorator>(
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a> {
+        decorator: &'a PD,
+    ) -> FunctionBodyDisplay<'a, PD> {
         FunctionBodyDisplay {
             body: self,
             indent,
             verbose: true,
             module,
+            decorator,
         }
     }
 
@@ -566,7 +587,7 @@ impl FunctionBody {
         if bad.len() > 0 {
             anyhow::bail!(
                 "Body is:\n{}\nError(s) in SSA: {:?}",
-                self.display_verbose(" | ", None),
+                self.display_verbose(" | ", None, &NOPPrintDecorator::default()),
                 bad
             );
         }

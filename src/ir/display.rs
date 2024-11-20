@@ -3,18 +3,35 @@
 use super::{FuncDecl, FunctionBody, Module, SourceLoc, ValueDef};
 use crate::entity::EntityRef;
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fmt::{self, Display, Formatter, Result as FmtResult};
+
+pub trait PrintDecorator {
+    // TODO: Add functions for before inst, before block, after block as well.
+    fn after_inst(
+        &self,
+        func: &FunctionBody,
+        val: super::Value,
+        f: &mut fmt::Formatter,
+    ) -> fmt::Result {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NOPPrintDecorator();
+impl PrintDecorator for NOPPrintDecorator {}
 
 /// A wrapper around a `FunctionBody` together with some auxiliary
 /// information to perform a pretty-print of that function.
-pub struct FunctionBodyDisplay<'a> {
+pub struct FunctionBodyDisplay<'a, PD: PrintDecorator> {
     pub(crate) body: &'a FunctionBody,
     pub(crate) indent: &'a str,
     pub(crate) verbose: bool,
     pub(crate) module: Option<&'a Module<'a>>,
+    pub(crate) decorator: &'a PD,
 }
 
-impl<'a> Display for FunctionBodyDisplay<'a> {
+impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         let arg_tys = self
             .body
@@ -39,23 +56,26 @@ impl<'a> Display for FunctionBodyDisplay<'a> {
 
         for (value, value_def) in self.body.values.entries() {
             match value_def {
-                ValueDef::Operator(op, args, tys) if self.verbose => writeln!(
-                    f,
-                    "{}    {} = {} {} # {}",
-                    self.indent,
-                    value,
-                    op,
-                    self.body.arg_pool[*args]
-                        .iter()
-                        .map(|arg| format!("{}", arg))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    self.body.type_pool[*tys]
-                        .iter()
-                        .map(|arg| format!("{}", arg))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )?,
+                ValueDef::Operator(op, args, tys) if self.verbose => {
+                    writeln!(
+                        f,
+                        "{}    {} = {} {} # {}",
+                        self.indent,
+                        value,
+                        op,
+                        self.body.arg_pool[*args]
+                            .iter()
+                            .map(|arg| format!("{}", arg))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        self.body.type_pool[*tys]
+                            .iter()
+                            .map(|arg| format!("{}", arg))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )?;
+                    self.decorator.after_inst(self.body, value, f)?;
+                }
                 ValueDef::BlockParam(block, idx, ty) if self.verbose => writeln!(
                     f,
                     "{}    {} = blockparam {}, {} # {}",
@@ -172,11 +192,12 @@ impl<'a> Display for FunctionBodyDisplay<'a> {
     }
 }
 
-pub struct ModuleDisplay<'a> {
+pub struct ModuleDisplay<'a, PD: PrintDecorator> {
     pub(crate) module: &'a Module<'a>,
+    pub(crate) decorators: HashMap<super::Func, &'a PD>,
 }
 
-impl<'a> Display for ModuleDisplay<'a> {
+impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         writeln!(f, "module {{")?;
         if let Some(func) = self.module.start_func {
@@ -250,7 +271,11 @@ impl<'a> Display for ModuleDisplay<'a> {
                         sig,
                         sig_strs.get(&sig).unwrap()
                     )?;
-                    writeln!(f, "{}", body.display("    ", Some(self.module)))?;
+                    writeln!(
+                        f,
+                        "{}",
+                        body.display("    ", Some(self.module), self.decorators[&func])
+                    )?;
                 }
                 FuncDecl::Lazy(sig, name, reader) => {
                     writeln!(
