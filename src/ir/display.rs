@@ -5,6 +5,8 @@ use crate::entity::EntityRef;
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter, Result as FmtResult};
 
+/// Hooks to print information after inst, before and after blocks
+/// and before and after functions.
 pub trait PrintDecorator {
     fn after_inst(&self, _value: super::Value, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
