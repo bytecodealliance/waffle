@@ -6,13 +6,23 @@ use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter, Result as FmtResult};
 
 pub trait PrintDecorator {
-    // TODO: Add functions for before inst, before block, after block as well.
-    fn after_inst(
-        &self,
-        func: &FunctionBody,
-        val: super::Value,
-        f: &mut fmt::Formatter,
-    ) -> fmt::Result {
+    fn after_inst(&self, _value: super::Value, _f: &mut fmt::Formatter) -> fmt::Result {
+        Ok(())
+    }
+
+    fn before_block(&self, _block: super::Block, _f: &mut fmt::Formatter) -> fmt::Result {
+        Ok(())
+    }
+
+    fn after_block(&self, _block: super::Block, _f: &mut fmt::Formatter) -> fmt::Result {
+        Ok(())
+    }
+
+    fn before_function_body(&self, _f: &mut fmt::Formatter) -> fmt::Result {
+        Ok(())
+    }
+
+    fn after_function_body(&self, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
     }
 }
@@ -54,12 +64,14 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
             ret_tys.join(", ")
         )?;
 
+        self.decorator.before_function_body(f)?;
+
         for (value, value_def) in self.body.values.entries() {
             match value_def {
                 ValueDef::Operator(op, args, tys) if self.verbose => {
-                    writeln!(
+                    write!(
                         f,
-                        "{}    {} = {} {} # {}",
+                        "{}    {} = {} {} # {} ",
                         self.indent,
                         value,
                         op,
@@ -74,7 +86,7 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                             .collect::<Vec<_>>()
                             .join(", "),
                     )?;
-                    self.decorator.after_inst(self.body, value, f)?;
+                    writeln!(f, "")?;
                 }
                 ValueDef::BlockParam(block, idx, ty) if self.verbose => writeln!(
                     f,
@@ -111,6 +123,9 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                 block_params.join(", "),
                 block.desc
             )?;
+
+            self.decorator.before_block(block_id, f)?;
+
             writeln!(
                 f,
                 "{}    # preds: {}",
@@ -163,9 +178,9 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                         } else {
                             "".to_owned()
                         };
-                        writeln!(
+                        write!(
                             f,
-                            "{}    {} = {} {} # {} {}",
+                            "{}    {} = {} {} # {} {} ",
                             self.indent,
                             inst,
                             op,
@@ -173,6 +188,8 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                             tys.join(", "),
                             loc,
                         )?;
+                        self.decorator.after_inst(inst, f)?;
+                        writeln!(f, "")?;
                     }
                     ValueDef::PickOutput(val, idx, ty) => {
                         writeln!(f, "{}    {} = {}.{} # {}", self.indent, inst, val, idx, ty)?;
@@ -182,9 +199,12 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                     }
                     _ => unreachable!(),
                 }
+                self.decorator.after_block(block_id, f)?;
             }
             writeln!(f, "{}    {}", self.indent, block.terminator)?;
         }
+
+        self.decorator.after_function_body(f)?;
 
         writeln!(f, "{}}}", self.indent)?;
 
