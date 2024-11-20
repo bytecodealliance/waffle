@@ -84,8 +84,12 @@ fn main() -> Result<()> {
             debug!("Loaded {} bytes of Wasm data", bytes.len());
             let mut module = Module::from_wasm_bytes(&bytes[..], &options)?;
             apply_options(&opts, &mut module)?;
-            let empty_decorator_map: HashMap<Func, &NOPPrintDecorator> = HashMap::new();
-            println!("{}", module.display(empty_decorator_map));
+            let mut nop_decorators = HashMap::new();
+            let nop_decorator = NOPPrintDecorator::default();
+            module.funcs.entries().into_iter().for_each(|(func, _)| {
+                nop_decorators.insert(func, &nop_decorator);
+            });
+            println!("{}", module.display(nop_decorators));
         }
         Command::PrintFunc { wasm, func } => {
             let bytes = std::fs::read(wasm)?;
