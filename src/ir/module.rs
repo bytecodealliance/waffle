@@ -330,11 +330,11 @@ impl<'a> Module<'a> {
 
     /// Return a wrapper that implements Display on this module,
     /// pretty-printing it as textual IR.
-    pub fn display<'b>(&'b self) -> ModuleDisplay<'b, NOPPrintDecorator>
+    pub fn display<'b>(&'b self) -> ModuleDisplay<'b, impl PrintDecorator>
     where
         'b: 'a,
     {
-        ModuleDisplay {
+        ModuleDisplay::<NOPPrintDecorator> {
             module: self,
             decorators: None,
         }

@@ -1,5 +1,6 @@
 use super::{
-    Block, FunctionBodyDisplay, Local, Module, PrintDecorator, Signature, Type, Value, ValueDef,
+    Block, FunctionBodyDisplay, Local, Module, NOPPrintDecorator, PrintDecorator, Signature, Type,
+    Value, ValueDef,
 };
 use crate::backend::WasmFuncBackend;
 use crate::cfg::CFGInfo;
@@ -452,8 +453,8 @@ impl FunctionBody {
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a, super::NOPPrintDecorator> {
-        FunctionBodyDisplay {
+    ) -> FunctionBodyDisplay<'a, impl PrintDecorator> {
+        FunctionBodyDisplay::<NOPPrintDecorator> {
             body: self,
             indent,
             verbose: false,
@@ -488,8 +489,8 @@ impl FunctionBody {
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a, super::NOPPrintDecorator> {
-        FunctionBodyDisplay {
+    ) -> FunctionBodyDisplay<'a, impl PrintDecorator> {
+        FunctionBodyDisplay::<NOPPrintDecorator> {
             body: self,
             indent,
             verbose: true,

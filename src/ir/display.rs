@@ -50,7 +50,7 @@ pub trait PrintDecorator {
 }
 
 #[derive(Default)]
-pub struct NOPPrintDecorator();
+pub(crate) struct NOPPrintDecorator();
 impl PrintDecorator for NOPPrintDecorator {}
 
 /// A wrapper around a `FunctionBody` together with some auxiliary
