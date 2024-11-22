@@ -295,10 +295,7 @@ impl<'a> Reducifier<'a> {
         crate::passes::maxssa::run(&mut new_body, Some(cut_blocks), &cfg);
         crate::passes::resolve_aliases::run(&mut new_body);
 
-        log::trace!(
-            "after max-SSA run:\n{}\n",
-            new_body.display("| ", None, &crate::NOPPrintDecorator::default())
-        );
+        log::trace!("after max-SSA run:\n{}\n", new_body.display("| ", None));
 
         // Implicitly, context {} has an identity-map from old block
         // number to new block number. We use the map only for
@@ -446,10 +443,7 @@ impl<'a> Reducifier<'a> {
 
         new_body.recompute_edges();
 
-        log::trace!(
-            "After duplication:\n{}\n",
-            new_body.display("| ", None, &crate::NOPPrintDecorator::default())
-        );
+        log::trace!("After duplication:\n{}\n", new_body.display("| ", None,));
 
         new_body.validate().unwrap();
         new_body.verify_reducible().unwrap();
@@ -548,10 +542,7 @@ mod test {
             },
         );
 
-        log::debug!(
-            "Body:\n{}",
-            body.display("| ", Some(&module), &crate::NOPPrintDecorator::default())
-        );
+        log::debug!("Body:\n{}", body.display("| ", Some(&module)));
 
         body.validate().unwrap();
 
@@ -560,10 +551,7 @@ mod test {
 
         new_body.validate().unwrap();
 
-        log::debug!(
-            "Reducified body:\n{}",
-            body.display("| ", Some(&module), &crate::NOPPrintDecorator::default())
-        );
+        log::debug!("Reducified body:\n{}", body.display("| ", Some(&module)));
 
         let cfg = CFGInfo::new(&new_body);
         for (block, def) in new_body.blocks.entries() {

@@ -40,7 +40,7 @@ fn rewrite_target(
 pub(crate) fn run(body: &mut FunctionBody) {
     log::trace!(
         "empty_blocks: running on func:\n{}\n",
-        body.display_verbose("| ", None, &crate::NOPPrintDecorator::default())
+        body.display_verbose("| ", None)
     );
 
     // Identify empty blocks, and to where they should forward.
@@ -72,6 +72,6 @@ pub(crate) fn run(body: &mut FunctionBody) {
 
     log::trace!(
         "empty_blocks: finished:\n{}\n",
-        body.display_verbose("| ", None, &crate::NOPPrintDecorator::default())
+        body.display_verbose("| ", None)
     );
 }

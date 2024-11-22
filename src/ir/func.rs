@@ -463,7 +463,24 @@ impl FunctionBody {
     /// Prety-print this function body. `indent` is prepended to each
     /// line of output. `module`, if provided, allows printing source
     /// locations as comments at each operator.
-    pub fn display<'a, PD: PrintDecorator>(
+    pub fn display<'a>(
+        &'a self,
+        indent: &'a str,
+        module: Option<&'a Module>,
+    ) -> FunctionBodyDisplay<'a, NOPPrintDecorator> {
+        FunctionBodyDisplay {
+            body: self,
+            indent,
+            verbose: false,
+            module,
+            decorator: None,
+        }
+    }
+
+    /// Prety-print this function body. `indent` is prepended to each
+    /// line of output. `module`, if provided, allows printing source
+    /// locations as comments at each operator.
+    pub fn display_with_decorator<'a, PD: PrintDecorator>(
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
@@ -474,25 +491,24 @@ impl FunctionBody {
             indent,
             verbose: false,
             module,
-            decorator,
+            decorator: Some(&decorator),
         }
     }
 
     /// Pretty-print this function body, with "verbose" format:
     /// includes all value nodes, even those not listed in a block's
     /// instruction list. (Roughly doubles output size.)
-    pub fn display_verbose<'a, PD: PrintDecorator>(
+    pub fn display_verbose<'a>(
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-        decorator: &'a PD,
-    ) -> FunctionBodyDisplay<'a, PD> {
+    ) -> FunctionBodyDisplay<'a, NOPPrintDecorator> {
         FunctionBodyDisplay {
             body: self,
             indent,
             verbose: true,
             module,
-            decorator,
+            decorator: None,
         }
     }
 
@@ -587,7 +603,7 @@ impl FunctionBody {
         if bad.len() > 0 {
             anyhow::bail!(
                 "Body is:\n{}\nError(s) in SSA: {:?}",
-                self.display_verbose(" | ", None, &NOPPrintDecorator::default()),
+                self.display_verbose(" | ", None),
                 bad
             );
         }

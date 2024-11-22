@@ -37,10 +37,7 @@ macro_rules! op {
 impl<'a> WasmFuncBackend<'a> {
     pub fn compile(body: &'a FunctionBody) -> Result<wasm_encoder::Function> {
         body.validate()?;
-        log::debug!(
-            "Backend compiling:\n{}\n",
-            body.display_verbose("| ", None, &crate::NOPPrintDecorator::default())
-        );
+        log::debug!("Backend compiling:\n{}\n", body.display_verbose("| ", None));
         // For ownership reasons (to avoid a self-referential struct
         // with the `Cow::Owned` case when the Reducifier modifies the
         // body), we have to run the Reducifier first, own its result

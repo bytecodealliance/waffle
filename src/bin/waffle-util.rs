@@ -101,7 +101,7 @@ fn main() -> Result<()> {
                 module.funcs[Func::new(*func)]
                     .body()
                     .unwrap()
-                    .display_verbose("", Some(&module), &waffle::NOPPrintDecorator::default())
+                    .display_verbose("", Some(&module))
             );
         }
         Command::RoundTrip { input, output } => {

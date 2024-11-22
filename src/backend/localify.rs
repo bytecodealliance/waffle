@@ -58,7 +58,7 @@ impl<'a, V: Visitor> BlockVisitor<'a, V> {
     fn new(body: &'a FunctionBody, trees: &'a Trees, visitor: V) -> Self {
         log::trace!(
             "localify: running on:\n{}",
-            body.display_verbose("| ", None, &crate::NOPPrintDecorator::default())
+            body.display_verbose("| ", None)
         );
         Self {
             body,

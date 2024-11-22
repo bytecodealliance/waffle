@@ -149,7 +149,7 @@ impl InterpContext {
         log::trace!(
             "Interp: entering func {}:\n{}\n",
             func,
-            body.display_verbose("| ", Some(module), &NOPPrintDecorator::default())
+            body.display_verbose("| ", Some(module))
         );
         log::trace!("args: {:?}", args);
 

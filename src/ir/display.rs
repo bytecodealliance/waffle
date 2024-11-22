@@ -5,25 +5,45 @@ use crate::entity::EntityRef;
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter, Result as FmtResult};
 
-/// Hooks to print information after inst, before and after blocks
+/// Hooks to print information after instruction, before and after blocks
 /// and before and after functions.
 pub trait PrintDecorator {
+    /// Print arbitrary text after an instruction.
+    ///
+    /// Invoked after every instruction in a block. The instruction has already been printed on its own line;
+    /// this method can print content after the operator, if desired.
     fn after_inst(&self, _value: super::Value, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
     }
 
+    /// Print arbitrary text before the body of a block.
+    ///
+    /// Invoked before the block body. The block id and parameters have already been printed on its own line;
+    /// this method can print content on the line below the block id, before the body of the block is printed, if desired.
     fn before_block(&self, _block: super::Block, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
     }
 
+    /// Print arbitrary text after the body of a block.
+    ///
+    /// Invoked after the block body, before the terminator. The block body has already been printed on its own line(s);
+    /// this method can print content on the line after the last instruction in the block body, before the terminator is printed.
     fn after_block(&self, _block: super::Block, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
     }
 
+    /// Print arbitrary text before the body of a function.
+    ///
+    /// Invoked before the function body is printed. The function id and signature have already been printed on its own line;
+    /// this method can print content on the line before the function signature line, before the function body is printed.
     fn before_function_body(&self, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
     }
 
+    /// Print arbitrary text after the body of a function.
+    ///
+    /// Invoked after the function body is printed. The function body has already been printed;
+    /// this method can print content on the line after the return block of the function, before the last curly brace to end the function is printed.
     fn after_function_body(&self, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
     }
@@ -40,7 +60,7 @@ pub struct FunctionBodyDisplay<'a, PD: PrintDecorator> {
     pub(crate) indent: &'a str,
     pub(crate) verbose: bool,
     pub(crate) module: Option<&'a Module<'a>>,
-    pub(crate) decorator: &'a PD,
+    pub(crate) decorator: Option<&'a PD>,
 }
 
 impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
@@ -66,12 +86,14 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
             ret_tys.join(", ")
         )?;
 
-        self.decorator.before_function_body(f)?;
+        if let Some(decorator) = self.decorator {
+            decorator.before_function_body(f)?;
+        }
 
         for (value, value_def) in self.body.values.entries() {
             match value_def {
                 ValueDef::Operator(op, args, tys) if self.verbose => {
-                    write!(
+                    writeln!(
                         f,
                         "{}    {} = {} {} # {} ",
                         self.indent,
@@ -88,7 +110,6 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                             .collect::<Vec<_>>()
                             .join(", "),
                     )?;
-                    writeln!(f, "")?;
                 }
                 ValueDef::BlockParam(block, idx, ty) if self.verbose => writeln!(
                     f,
@@ -126,7 +147,9 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                 block.desc
             )?;
 
-            self.decorator.before_block(block_id, f)?;
+            if let Some(decorator) = self.decorator {
+                decorator.before_block(block_id, f)?
+            };
 
             writeln!(
                 f,
@@ -190,7 +213,9 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                             tys.join(", "),
                             loc,
                         )?;
-                        self.decorator.after_inst(inst, f)?;
+                        if let Some(decorator) = self.decorator {
+                            decorator.after_inst(inst, f)?;
+                        }
                         writeln!(f, "")?;
                     }
                     ValueDef::PickOutput(val, idx, ty) => {
@@ -201,13 +226,16 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
                     }
                     _ => unreachable!(),
                 }
-                self.decorator.after_block(block_id, f)?;
+            }
+            if let Some(decorator) = self.decorator {
+                decorator.after_block(block_id, f)?;
             }
             writeln!(f, "{}    {}", self.indent, block.terminator)?;
         }
 
-        self.decorator.after_function_body(f)?;
-
+        if let Some(decorator) = self.decorator {
+            decorator.after_function_body(f)?;
+        }
         writeln!(f, "{}}}", self.indent)?;
 
         Ok(())
@@ -293,11 +321,7 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
                         sig,
                         sig_strs.get(&sig).unwrap()
                     )?;
-                    writeln!(
-                        f,
-                        "{}",
-                        body.display("    ", Some(self.module), self.decorators[&func])
-                    )?;
+                    writeln!(f, "{}", body.display("    ", Some(self.module)))?;
                 }
                 FuncDecl::Lazy(sig, name, reader) => {
                     writeln!(
