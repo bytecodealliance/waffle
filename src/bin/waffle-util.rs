@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use log::debug;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use structopt::StructOpt;
-use waffle::{entity::EntityRef, FrontendOptions, Func, Module, NOPPrintDecorator, OptOptions};
+use waffle::{entity::EntityRef, FrontendOptions, Func, Module, OptOptions};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "waffle-util", about = "WAFFLE utility.")]
@@ -84,12 +84,7 @@ fn main() -> Result<()> {
             debug!("Loaded {} bytes of Wasm data", bytes.len());
             let mut module = Module::from_wasm_bytes(&bytes[..], &options)?;
             apply_options(&opts, &mut module)?;
-            let mut nop_decorators = HashMap::new();
-            let nop_decorator = NOPPrintDecorator::default();
-            module.funcs.entries().into_iter().for_each(|(func, _)| {
-                nop_decorators.insert(func, &nop_decorator);
-            });
-            println!("{}", module.display(nop_decorators));
+            println!("{}", module.display());
         }
         Command::PrintFunc { wasm, func } => {
             let bytes = std::fs::read(wasm)?;

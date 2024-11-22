@@ -244,7 +244,7 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
 
 pub struct ModuleDisplay<'a, PD: PrintDecorator> {
     pub(crate) module: &'a Module<'a>,
-    pub(crate) decorators: HashMap<super::Func, &'a PD>,
+    pub(crate) decorators: Option<HashMap<super::Func, &'a PD>>,
 }
 
 impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {

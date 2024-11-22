@@ -8,7 +8,7 @@ use crate::frontend::parse_body;
 use crate::ir::SourceLoc;
 use crate::passes::basic_opt::OptOptions;
 use crate::pool::{ListPool, ListRef};
-use crate::{NOPPrintDecorator, Operator};
+use crate::Operator;
 use anyhow::Result;
 use fxhash::FxHashMap;
 use std::collections::HashSet;
@@ -445,21 +445,6 @@ impl FunctionBody {
         self.blocks[block].terminator = terminator;
     }
 
-    // In func.rs
-    // pub fn display<'a, PD: PrintDec>(
-    //     &'a self,
-    //     indent: &'a str,
-    //     module: Option<&'a Module>,
-    //     pd: &PD
-    // ) -> FunctionBodyDisplay<'_, PD> { // print decorator lifetime
-    //     FunctionBodyDisplay {
-    //         body: self,
-    //         indent,
-    //         verbose: false,
-    //         module,
-    //     }
-    // }
-
     /// Prety-print this function body. `indent` is prepended to each
     /// line of output. `module`, if provided, allows printing source
     /// locations as comments at each operator.
@@ -467,7 +452,7 @@ impl FunctionBody {
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a, NOPPrintDecorator> {
+    ) -> FunctionBodyDisplay<'a, super::NOPPrintDecorator> {
         FunctionBodyDisplay {
             body: self,
             indent,
@@ -477,9 +462,10 @@ impl FunctionBody {
         }
     }
 
-    /// Prety-print this function body. `indent` is prepended to each
-    /// line of output. `module`, if provided, allows printing source
-    /// locations as comments at each operator.
+    /// Prety-print this function body with some additional information.
+    /// `indent` is prepended to each line of output.
+    /// `module`, if provided, allows printing source locations as comments at each operator.
+    /// `decorator` describes how the additional information should be printed in the IR.
     pub fn display_with_decorator<'a, PD: PrintDecorator>(
         &'a self,
         indent: &'a str,
@@ -502,7 +488,7 @@ impl FunctionBody {
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a, NOPPrintDecorator> {
+    ) -> FunctionBodyDisplay<'a, super::NOPPrintDecorator> {
         FunctionBodyDisplay {
             body: self,
             indent,

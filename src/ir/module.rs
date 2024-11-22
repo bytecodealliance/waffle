@@ -1,5 +1,6 @@
 use super::{
-    Func, FuncDecl, Global, Memory, ModuleDisplay, PrintDecorator, Signature, Table, Type,
+    Func, FuncDecl, Global, Memory, ModuleDisplay, NOPPrintDecorator, PrintDecorator, Signature,
+    Table, Type,
 };
 use crate::entity::{EntityRef, EntityVec};
 use crate::ir::{Debug, DebugMap, FunctionBody};
@@ -329,7 +330,20 @@ impl<'a> Module<'a> {
 
     /// Return a wrapper that implements Display on this module,
     /// pretty-printing it as textual IR.
-    pub fn display<'b, PD: PrintDecorator>(
+    pub fn display<'b>(&'b self) -> ModuleDisplay<'b, NOPPrintDecorator>
+    where
+        'b: 'a,
+    {
+        ModuleDisplay {
+            module: self,
+            decorators: None,
+        }
+    }
+
+    /// Return a wrapper that implements Display on this module,
+    /// pretty-printing it as textual IR with some additional text whose
+    /// printing is described in Decorator.
+    pub fn display_with_decorators<'b, PD: PrintDecorator>(
         &'b self,
         decorators: HashMap<Func, &'b PD>,
     ) -> ModuleDisplay<'b, PD>
@@ -338,7 +352,7 @@ impl<'a> Module<'a> {
     {
         ModuleDisplay {
             module: self,
-            decorators,
+            decorators: Some(decorators),
         }
     }
 
