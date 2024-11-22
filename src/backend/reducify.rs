@@ -443,7 +443,7 @@ impl<'a> Reducifier<'a> {
 
         new_body.recompute_edges();
 
-        log::trace!("After duplication:\n{}\n", new_body.display("| ", None,));
+        log::trace!("After duplication:\n{}\n", new_body.display("| ", None));
 
         new_body.validate().unwrap();
         new_body.verify_reducible().unwrap();
