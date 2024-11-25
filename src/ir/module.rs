@@ -6,7 +6,7 @@ use crate::entity::{EntityRef, EntityVec};
 use crate::ir::{Debug, DebugMap, FunctionBody};
 use crate::{backend, frontend};
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 pub use crate::frontend::FrontendOptions;
 
@@ -343,9 +343,9 @@ impl<'a> Module<'a> {
     /// Return a wrapper that implements Display on this module,
     /// pretty-printing it as textual IR with some additional text whose
     /// printing is described in Decorator.
-    pub fn display_with_decorators<'b, PD: PrintDecorator>(
+    pub fn display_with_decorator<'b, PD: PrintDecorator>(
         &'b self,
-        decorators: HashMap<Func, &'b PD>,
+        decorators: Box<dyn Fn(Func) -> PD>,
     ) -> ModuleDisplay<'b, PD>
     where
         'b: 'a,

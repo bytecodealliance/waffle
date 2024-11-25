@@ -1,6 +1,6 @@
 //! Displaying IR.
 
-use super::{FuncDecl, FunctionBody, Module, SourceLoc, ValueDef};
+use super::{Func, FuncDecl, FunctionBody, Module, SourceLoc, ValueDef};
 use crate::entity::EntityRef;
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter, Result as FmtResult};
@@ -244,7 +244,7 @@ impl<'a, PD: PrintDecorator> Display for FunctionBodyDisplay<'a, PD> {
 
 pub struct ModuleDisplay<'a, PD: PrintDecorator> {
     pub(crate) module: &'a Module<'a>,
-    pub(crate) decorators: Option<HashMap<super::Func, &'a PD>>,
+    pub(crate) decorators: Option<Box<dyn Fn(Func) -> PD>>,
 }
 
 impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
@@ -321,7 +321,15 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
                         sig,
                         sig_strs.get(&sig).unwrap()
                     )?;
-                    writeln!(f, "{}", body.display("    ", Some(self.module)))?;
+
+                    if let Some(decorator) = &self.decorators {
+                        let decorator = &(*decorator)(func);
+                        writeln!(
+                            f,
+                            "{}",
+                            body.display_with_decorator("    ", Some(self.module), decorator)
+                        )?;
+                    }
                 }
                 FuncDecl::Lazy(sig, name, reader) => {
                     writeln!(
