@@ -1,4 +1,7 @@
-use super::{Func, FuncDecl, Global, Memory, ModuleDisplay, Signature, Table, Type};
+use super::{
+    Func, FuncDecl, Global, Memory, ModuleDisplay, NOPPrintDecorator, PrintDecorator, Signature,
+    Table, Type,
+};
 use crate::entity::{EntityRef, EntityVec};
 use crate::ir::{Debug, DebugMap, FunctionBody};
 use crate::{backend, frontend};
@@ -327,11 +330,30 @@ impl<'a> Module<'a> {
 
     /// Return a wrapper that implements Display on this module,
     /// pretty-printing it as textual IR.
-    pub fn display<'b>(&'b self) -> ModuleDisplay<'b>
+    pub fn display<'b>(&'b self) -> ModuleDisplay<'b, impl PrintDecorator>
     where
         'b: 'a,
     {
-        ModuleDisplay { module: self }
+        ModuleDisplay::<NOPPrintDecorator> {
+            module: self,
+            decorators: None,
+        }
+    }
+
+    /// Return a wrapper that implements Display on this module,
+    /// pretty-printing it as textual IR with some additional text whose
+    /// printing is described in Decorator.
+    pub fn display_with_decorator<'b, PD: PrintDecorator>(
+        &'b self,
+        decorators: Box<dyn Fn(Func) -> PD>,
+    ) -> ModuleDisplay<'b, PD>
+    where
+        'b: 'a,
+    {
+        ModuleDisplay {
+            module: self,
+            decorators: Some(decorators),
+        }
     }
 
     /// Internal (used during parsing): create an empty module, with

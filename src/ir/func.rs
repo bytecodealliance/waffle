@@ -1,4 +1,7 @@
-use super::{Block, FunctionBodyDisplay, Local, Module, Signature, Type, Value, ValueDef};
+use super::{
+    Block, FunctionBodyDisplay, Local, Module, NOPPrintDecorator, PrintDecorator, Signature, Type,
+    Value, ValueDef,
+};
 use crate::backend::WasmFuncBackend;
 use crate::cfg::CFGInfo;
 use crate::entity::{EntityRef, EntityVec, PerEntity};
@@ -450,12 +453,32 @@ impl FunctionBody {
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a> {
+    ) -> FunctionBodyDisplay<'a, impl PrintDecorator> {
+        FunctionBodyDisplay::<NOPPrintDecorator> {
+            body: self,
+            indent,
+            verbose: false,
+            module,
+            decorator: None,
+        }
+    }
+
+    /// Prety-print this function body with some additional information.
+    /// `indent` is prepended to each line of output.
+    /// `module`, if provided, allows printing source locations as comments at each operator.
+    /// `decorator` describes how the additional information should be printed in the IR.
+    pub fn display_with_decorator<'a, PD: PrintDecorator>(
+        &'a self,
+        indent: &'a str,
+        module: Option<&'a Module>,
+        decorator: &'a PD,
+    ) -> FunctionBodyDisplay<'a, PD> {
         FunctionBodyDisplay {
             body: self,
             indent,
             verbose: false,
             module,
+            decorator: Some(&decorator),
         }
     }
 
@@ -466,12 +489,13 @@ impl FunctionBody {
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-    ) -> FunctionBodyDisplay<'a> {
-        FunctionBodyDisplay {
+    ) -> FunctionBodyDisplay<'a, impl PrintDecorator> {
+        FunctionBodyDisplay::<NOPPrintDecorator> {
             body: self,
             indent,
             verbose: true,
             module,
+            decorator: None,
         }
     }
 
