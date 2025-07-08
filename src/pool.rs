@@ -75,7 +75,11 @@ impl<T: Clone + Debug> ListPool<T> {
     /// Allocate a list of the given size with `size` copies of the
     /// value `initial`.
     pub fn allocate(&mut self, size: usize, initial: T) -> ListRef<T> {
-        self.from_iter(std::iter::repeat(initial).take(size))
+        if size == 0 {
+            ListRef::default()
+        } else {
+            self.from_iter(std::iter::repeat(initial).take(size))
+        }
     }
     /// Perform a deep-clone of a list: copy it to a new list and
     /// return the handle of that list.

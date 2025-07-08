@@ -1,13 +1,13 @@
 //! Basic optimizations: GVN and constant-propagation/folding.
 
+use crate::Operator;
 use crate::cfg::CFGInfo;
-use crate::interp::{const_eval, ConstVal};
+use crate::interp::{ConstVal, const_eval};
 use crate::ir::*;
-use crate::passes::dom_pass::{dom_pass, DomtreePass};
+use crate::passes::dom_pass::{DomtreePass, dom_pass};
 use crate::pool::ListRef;
 use crate::scoped_map::ScopedMap;
-use crate::Operator;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 #[derive(Clone, Debug)]
 pub struct OptOptions {
@@ -43,7 +43,7 @@ pub(crate) fn basic_opt(body: &mut FunctionBody, cfg: &CFGInfo, options: &OptOpt
 
 #[derive(Debug)]
 struct BasicOptPass<'a> {
-    map: ScopedMap<ValueDef, Value>,
+    map: ScopedMap<(Operator, Vec<Value>, Vec<Type>), Value>,
     cfg: &'a CFGInfo,
     options: &'a OptOptions,
     changed: bool,
@@ -51,11 +51,13 @@ struct BasicOptPass<'a> {
 
 impl<'a> DomtreePass for BasicOptPass<'a> {
     fn enter(&mut self, block: Block, body: &mut FunctionBody) {
+        log::trace!("pushing map level");
         self.map.push_level();
         self.optimize(block, body);
     }
 
     fn leave(&mut self, _block: Block, _body: &mut FunctionBody) {
+        log::trace!("popping map level");
         self.map.pop_level();
     }
 }
@@ -107,6 +109,7 @@ fn remove_all_from_vec<T: Clone>(v: &mut Vec<T>, indices: &[usize]) {
 
 impl<'a> BasicOptPass<'a> {
     fn optimize(&mut self, block: Block, body: &mut FunctionBody) {
+        log::trace!("Basic opts: visiting block {block}");
         if self.options.redundant_blockparams && block != body.entry {
             // Pass over blockparams, checking all inputs. If all inputs
             // resolve to the same SSA value, remove the blockparam and
@@ -133,11 +136,13 @@ impl<'a> BasicOptPass<'a> {
                 }
                 let const_val = const_val.unwrap();
 
+                log::trace!("blockparam {blockparam}: inputs {inputs:?}");
                 assert!(inputs.len() > 0);
                 if inputs.iter().all(|x| *x == inputs[0]) {
                     // All inputs are the same value; remove the
                     // blockparam and rewrite it as an alias of the one
                     // single value.
+                    log::trace!(" -> all inputs are {}", inputs[0]);
                     body.values[blockparam] = ValueDef::Alias(inputs[0]);
                     blockparams_to_remove.push(i);
                 } else if const_val != ConstVal::None {
@@ -176,26 +181,28 @@ impl<'a> BasicOptPass<'a> {
         while i < body.blocks[block].insts.len() {
             let inst = body.blocks[block].insts[i];
             i += 1;
+
+            // Resolve aliases in the arg lists.
+            match body.values[inst].clone() {
+                ValueDef::Operator(_, args, _) => {
+                    for i in 0..args.len() {
+                        let val = body.arg_pool[args][i];
+                        let new_val = body.resolve_and_update_alias(val);
+                        body.arg_pool[args][i] = new_val;
+                        self.changed |= new_val != val;
+                    }
+                }
+                ValueDef::PickOutput(val, idx, ty) => {
+                    let updated = body.resolve_and_update_alias(val);
+                    body.values[inst] = ValueDef::PickOutput(updated, idx, ty);
+                    self.changed |= updated != val;
+                }
+                _ => {}
+            }
+
             if value_is_pure(inst, body) {
                 let mut value = body.values[inst].clone();
-
-                // Resolve aliases in the arg lists.
-                match &mut value {
-                    &mut ValueDef::Operator(_, args, _) => {
-                        for i in 0..args.len() {
-                            let val = body.arg_pool[args][i];
-                            let new_val = body.resolve_and_update_alias(val);
-                            body.arg_pool[args][i] = new_val;
-                            self.changed |= new_val != val;
-                        }
-                    }
-                    &mut ValueDef::PickOutput(ref mut val, ..) => {
-                        let updated = body.resolve_and_update_alias(*val);
-                        *val = updated;
-                        self.changed |= updated != *val;
-                    }
-                    _ => {}
-                }
+                log::trace!("optimizing {inst} ({value:?})");
 
                 // Try to constant-propagate.
                 if self.options.cprop {
@@ -257,16 +264,33 @@ impl<'a> BasicOptPass<'a> {
                 if self.options.gvn {
                     // GVN: look for already-existing copies of this
                     // value.
-                    if let Some(value) = self.map.get(&value) {
-                        body.set_alias(inst, *value);
-                        i -= 1;
-                        body.blocks[block].insts.remove(i);
-                        self.changed = true;
-                        continue;
+                    log::trace!("looking up {value:?} in GVN map");
+                    if let ValueDef::Operator(op, args, ty) = &value {
+                        let gvn_tuple = (
+                            *op,
+                            body.arg_pool[*args].to_vec(),
+                            body.type_pool[*ty].to_vec(),
+                        );
+                        if let Some(orig) = self.map.get(&gvn_tuple) {
+                            log::trace!("GVN: value {inst} ({gvn_tuple:?}) replaced by {orig}");
+                            body.set_alias(inst, *orig);
+                            i -= 1;
+                            body.blocks[block].insts.remove(i);
+                            self.changed = true;
+                            continue;
+                        }
+                        log::trace!("inserting {gvn_tuple:?} -> {inst} into GVN map");
+                        self.map.insert(gvn_tuple, inst);
                     }
-                    self.map.insert(value, inst);
                 }
             }
         }
+
+        // Resolve aliases in the terminator.
+        let mut terminator = std::mem::take(&mut body.blocks[block].terminator);
+        terminator.update_uses(|u| {
+            *u = body.resolve_alias(*u);
+        });
+        body.blocks[block].terminator = terminator;
     }
 }
