@@ -1434,7 +1434,9 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
             | wasmparser::Operator::CallRef { .. }
             | wasmparser::Operator::RefIsNull
             | wasmparser::Operator::RefNull { .. }
-            | wasmparser::Operator::RefFunc { .. } => {
+            | wasmparser::Operator::RefFunc { .. }
+            | wasmparser::Operator::MemoryFill { .. }
+            | wasmparser::Operator::MemoryCopy { .. } => {
                 self.emit(Operator::try_from(&op).unwrap(), loc)?
             }
 
