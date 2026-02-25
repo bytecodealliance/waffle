@@ -322,14 +322,16 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
                         sig_strs.get(&sig).unwrap()
                     )?;
 
-                    if let Some(decorator) = &self.decorators {
-                        let decorator = &(*decorator)(func);
-                        writeln!(
-                            f,
-                            "{}",
-                            body.display_with_decorator("    ", Some(self.module), decorator)
-                        )?;
-                    }
+                    let decorator = self
+                        .decorators
+                        .as_ref()
+                        .map(|decorator_fn| decorator_fn(func));
+
+                    writeln!(
+                        f,
+                        "{}",
+                        body.display_with_decorator("    ", Some(self.module), decorator.as_ref())
+                    )?;
                 }
                 FuncDecl::Lazy(sig, name, reader) => {
                     writeln!(

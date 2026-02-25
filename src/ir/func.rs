@@ -471,14 +471,14 @@ impl FunctionBody {
         &'a self,
         indent: &'a str,
         module: Option<&'a Module>,
-        decorator: &'a PD,
+        decorator: Option<&'a PD>,
     ) -> FunctionBodyDisplay<'a, PD> {
         FunctionBodyDisplay {
             body: self,
             indent,
             verbose: false,
             module,
-            decorator: Some(&decorator),
+            decorator: decorator,
         }
     }
 
