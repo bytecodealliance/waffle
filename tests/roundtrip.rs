@@ -1,7 +1,7 @@
 //! Integration test to ensure that roundtripping works.
 
 use std::path::PathBuf;
-use waffle::{FrontendOptions, Module};
+use waffle::{FrontendOptions, Module, OptOptions};
 
 fn get_wats() -> Vec<PathBuf> {
     let test_dir = std::env::current_dir()
@@ -24,9 +24,13 @@ fn idempotent_roundtrips() {
     for wat in get_wats() {
         let bytes1 = wat::parse_file(&wat).unwrap();
         let opts = FrontendOptions::default();
-        let module1 = Module::from_wasm_bytes(&bytes1, &opts).unwrap();
+        let mut module1 = Module::from_wasm_bytes(&bytes1, &opts).unwrap();
+        module1.expand_all_funcs().unwrap();
+        module1.per_func_body(|func| func.optimize(&OptOptions::default()));
         let bytes2 = module1.to_wasm_bytes().unwrap();
-        let module2 = Module::from_wasm_bytes(&bytes2, &opts).unwrap();
+        let mut module2 = Module::from_wasm_bytes(&bytes2, &opts).unwrap();
+        module2.expand_all_funcs().unwrap();
+        module2.per_func_body(|func| func.optimize(&OptOptions::default()));
         let bytes3 = module2.to_wasm_bytes().unwrap();
         assert_eq!(bytes2, bytes3);
     }
