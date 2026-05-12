@@ -5,8 +5,10 @@ use crate::entity::EntityRef;
 use crate::ir::{ExportKind, FuncDecl, FunctionBody, ImportKind, Module, Type, Value, ValueDef};
 use crate::Operator;
 use anyhow::Result;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::borrow::Cow;
+use std::convert::TryFrom;
 
 pub mod reducify;
 use reducify::Reducifier;
@@ -385,12 +387,12 @@ impl<'a> WasmFuncBackend<'a> {
             Operator::I64Const { value } => {
                 Some(wasm_encoder::Instruction::I64Const(*value as i64))
             }
-            Operator::F32Const { value } => {
-                Some(wasm_encoder::Instruction::F32Const(f32::from_bits(*value)))
-            }
-            Operator::F64Const { value } => {
-                Some(wasm_encoder::Instruction::F64Const(f64::from_bits(*value)))
-            }
+            Operator::F32Const { value } => Some(wasm_encoder::Instruction::F32Const(
+                f32::from_bits(*value).into(),
+            )),
+            Operator::F64Const { value } => Some(wasm_encoder::Instruction::F64Const(
+                f64::from_bits(*value).into(),
+            )),
 
             Operator::I32Eqz => op!(I32Eqz),
             Operator::I32Eq => op!(I32Eq),
@@ -996,7 +998,7 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
             .returns
             .iter()
             .map(|&ty| wasm_encoder::ValType::from(ty));
-        types.function(params, returns);
+        types.ty().function(params, returns);
     }
     into_mod.section(&types);
 
@@ -1020,6 +1022,7 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
                     minimum: table.initial,
                     maximum: table.max,
                     table64: false,
+                    shared: false,
                 })
             }
             &ImportKind::Global(global) => {
@@ -1069,6 +1072,7 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
             minimum: table_data.initial,
             maximum: table_data.max,
             table64: false,
+            shared: false,
         });
     }
     into_mod.section(&tables);
@@ -1150,7 +1154,9 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
                             elem.active(
                                 Some(table.index() as u32),
                                 &wasm_encoder::ConstExpr::i32_const(i as i32),
-                                wasm_encoder::Elements::Functions(&[elt.index() as u32]),
+                                wasm_encoder::Elements::Functions(std::borrow::Cow::Borrowed(&[
+                                    u32::try_from(elt.index()).unwrap(),
+                                ])),
                             );
                         }
                         Type::TypedFuncRef(..) => {
@@ -1159,7 +1165,11 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
                                 &wasm_encoder::ConstExpr::i32_const(i as i32),
                                 wasm_encoder::Elements::Expressions(
                                     table_data.ty.into(),
-                                    &[wasm_encoder::ConstExpr::ref_func(elt.index() as u32)],
+                                    std::borrow::Cow::Borrowed(&[
+                                        wasm_encoder::ConstExpr::ref_func(
+                                            u32::try_from(elt.index()).unwrap(),
+                                        ),
+                                    ]),
                                 ),
                             );
                         }
@@ -1173,12 +1183,16 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
 
     let mut code = wasm_encoder::CodeSection::new();
 
-    let bodies = module
+    let entries = module
         .funcs
         .entries()
         .skip(num_func_imports)
-        .collect::<Vec<_>>()
-        .par_iter()
+        .collect::<Vec<_>>();
+    #[cfg(feature = "parallel")]
+    let iter = entries.par_iter();
+    #[cfg(not(feature = "parallel"))]
+    let iter = entries.iter();
+    let bodies = iter
         .map(|(func, func_decl)| -> Result<_> {
             match func_decl {
                 FuncDecl::Lazy(_, _name, reader) => {
@@ -1237,8 +1251,8 @@ fn const_init(ty: Type, value: Option<u64>) -> wasm_encoder::ConstExpr {
     match ty {
         Type::I32 => wasm_encoder::ConstExpr::i32_const(bits as u32 as i32),
         Type::I64 => wasm_encoder::ConstExpr::i64_const(bits as i64),
-        Type::F32 => wasm_encoder::ConstExpr::f32_const(f32::from_bits(bits as u32)),
-        Type::F64 => wasm_encoder::ConstExpr::f64_const(f64::from_bits(bits as u64)),
+        Type::F32 => wasm_encoder::ConstExpr::f32_const(f32::from_bits(bits as u32).into()),
+        Type::F64 => wasm_encoder::ConstExpr::f64_const(f64::from_bits(bits as u64).into()),
         Type::TypedFuncRef(true, sig) if bits == 0 => {
             let hty = wasm_encoder::HeapType::Concrete(sig);
             wasm_encoder::ConstExpr::ref_null(hty)

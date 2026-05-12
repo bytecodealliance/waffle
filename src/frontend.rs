@@ -7,6 +7,7 @@ use crate::errors::FrontendError;
 use crate::ir::*;
 use crate::op_traits::{op_inputs, op_outputs};
 use crate::ops::Operator;
+#[cfg(feature = "dwarf")]
 use addr2line::gimli;
 use anyhow::{bail, Result};
 use fxhash::{FxHashMap, FxHashSet};
@@ -27,6 +28,7 @@ pub(crate) fn wasm_to_ir<'a>(bytes: &'a [u8], options: &FrontendOptions) -> Resu
     let mut module = Module::with_orig_bytes(bytes);
     let parser = Parser::new(0);
     let mut next_func = 0;
+    #[cfg(feature = "dwarf")]
     let mut dwarf = gimli::Dwarf::default();
     let mut extra_sections = ExtraSections::default();
     for payload in parser.parse_all(bytes) {
@@ -35,18 +37,27 @@ pub(crate) fn wasm_to_ir<'a>(bytes: &'a [u8], options: &FrontendOptions) -> Resu
             &mut module,
             payload,
             &mut next_func,
+            #[cfg(feature = "dwarf")]
             &mut dwarf,
             &mut extra_sections,
         )?;
     }
-    dwarf.locations =
-        gimli::LocationLists::new(extra_sections.debug_loc, extra_sections.debug_loclists);
-    dwarf.ranges =
-        gimli::RangeLists::new(extra_sections.debug_ranges, extra_sections.debug_rnglists);
+    #[cfg(feature = "dwarf")]
+    {
+        dwarf.locations =
+            gimli::LocationLists::new(extra_sections.debug_loc, extra_sections.debug_loclists);
+        dwarf.ranges =
+            gimli::RangeLists::new(extra_sections.debug_ranges, extra_sections.debug_rnglists);
 
-    if options.debug {
-        let debug_map = DebugMap::from_dwarf(dwarf, &mut module.debug, extra_sections.code_offset)?;
-        module.debug_map = debug_map;
+        if options.debug {
+            let debug_map =
+                DebugMap::from_dwarf(dwarf, &mut module.debug, extra_sections.code_offset)?;
+            module.debug_map = debug_map;
+        }
+    }
+    #[cfg(not(feature = "dwarf"))]
+    {
+        let _ = options.debug;
     }
 
     Ok(module)
@@ -80,18 +91,24 @@ fn parse_init_expr<'a>(init_expr: &wasmparser::ConstExpr<'a>) -> Result<Option<u
 
 #[derive(Default)]
 struct ExtraSections<'a> {
+    #[cfg(feature = "dwarf")]
     debug_loc: gimli::DebugLoc<gimli::EndianSlice<'a, gimli::LittleEndian>>,
+    #[cfg(feature = "dwarf")]
     debug_loclists: gimli::DebugLocLists<gimli::EndianSlice<'a, gimli::LittleEndian>>,
+    #[cfg(feature = "dwarf")]
     debug_ranges: gimli::DebugRanges<gimli::EndianSlice<'a, gimli::LittleEndian>>,
+    #[cfg(feature = "dwarf")]
     debug_rnglists: gimli::DebugRngLists<gimli::EndianSlice<'a, gimli::LittleEndian>>,
     code_offset: u32,
+    #[cfg(not(feature = "dwarf"))]
+    _phantom: std::marker::PhantomData<&'a ()>,
 }
 
 fn handle_payload<'a>(
     module: &mut Module<'a>,
     payload: Payload<'a>,
     next_func: &mut usize,
-    dwarf: &mut gimli::Dwarf<gimli::EndianSlice<'a, gimli::LittleEndian>>,
+    #[cfg(feature = "dwarf")] dwarf: &mut gimli::Dwarf<gimli::EndianSlice<'a, gimli::LittleEndian>>,
     extra_sections: &mut ExtraSections<'a>,
 ) -> Result<()> {
     trace!("Wasm parser item: {:?}", payload);
@@ -99,8 +116,8 @@ fn handle_payload<'a>(
         Payload::TypeSection(reader) => {
             for rec_group in reader {
                 for ty in rec_group?.into_types() {
-                    match &ty.composite_type {
-                        wasmparser::CompositeType::Func(fty) => {
+                    match &ty.composite_type.inner {
+                        wasmparser::CompositeInnerType::Func(fty) => {
                             module.signatures.push(fty.into());
                         }
                         _ => bail!(FrontendError::UnsupportedFeature(
@@ -111,57 +128,81 @@ fn handle_payload<'a>(
             }
         }
         Payload::ImportSection(reader) => {
-            for import in reader {
-                let import = import?;
-                let module_name = import.module.to_owned();
-                let name = import.name.to_owned();
-                let kind = match import.ty {
-                    TypeRef::Func(sig_idx) => {
-                        let func = module
-                            .funcs
-                            .push(FuncDecl::Import(Signature::from(sig_idx), "".to_owned()));
-                        *next_func += 1;
-                        ImportKind::Func(func)
-                    }
-                    TypeRef::Global(ty) => {
-                        let mutable = ty.mutable;
-                        let ty = ty.content_type.into();
-                        let global = module.globals.push(GlobalData {
-                            ty,
-                            value: None,
-                            mutable,
-                        });
-                        ImportKind::Global(global)
-                    }
-                    TypeRef::Table(ty) => {
-                        let table = module.tables.push(TableData {
-                            ty: ty.element_type.into(),
-                            initial: ty.initial,
-                            max: ty.maximum,
-                            func_elements: Some(vec![]),
-                        });
-                        ImportKind::Table(table)
-                    }
-                    TypeRef::Memory(mem) => {
-                        let mem = module.memories.push(MemoryData {
-                            initial_pages: mem.initial as usize,
-                            maximum_pages: mem.maximum.map(|max| max as usize),
-                            segments: vec![],
-                        });
-                        ImportKind::Memory(mem)
-                    }
-                    t => {
-                        bail!(FrontendError::UnsupportedFeature(format!(
-                            "Unknown import type: {:?}",
-                            t
-                        )));
-                    }
+            for imports in reader {
+                let imports = imports?;
+                let mut handle = |module_name: &str, name: &str, ty: TypeRef| -> Result<()> {
+                    let module_name = module_name.to_owned();
+                    let name = name.to_owned();
+                    let kind = match ty {
+                        TypeRef::Func(sig_idx) | TypeRef::FuncExact(sig_idx) => {
+                            let func = module
+                                .funcs
+                                .push(FuncDecl::Import(Signature::from(sig_idx), "".to_owned()));
+                            *next_func += 1;
+                            ImportKind::Func(func)
+                        }
+                        TypeRef::Global(ty) => {
+                            let mutable = ty.mutable;
+                            let ty = ty.content_type.into();
+                            let global = module.globals.push(GlobalData {
+                                ty,
+                                value: None,
+                                mutable,
+                            });
+                            ImportKind::Global(global)
+                        }
+                        TypeRef::Table(ty) => {
+                            let table = module.tables.push(TableData {
+                                ty: ty.element_type.into(),
+                                initial: ty.initial,
+                                max: ty.maximum,
+                                func_elements: Some(vec![]),
+                            });
+                            ImportKind::Table(table)
+                        }
+                        TypeRef::Memory(mem) => {
+                            let mem = module.memories.push(MemoryData {
+                                initial_pages: mem.initial as usize,
+                                maximum_pages: mem.maximum.map(|max| max as usize),
+                                segments: vec![],
+                            });
+                            ImportKind::Memory(mem)
+                        }
+                        t => {
+                            bail!(FrontendError::UnsupportedFeature(format!(
+                                "Unknown import type: {:?}",
+                                t
+                            )));
+                        }
+                    };
+                    module.imports.push(Import {
+                        module: module_name,
+                        name,
+                        kind,
+                    });
+                    Ok(())
                 };
-                module.imports.push(Import {
-                    module: module_name,
-                    name,
-                    kind,
-                });
+                match imports {
+                    wasmparser::Imports::Single(_, import) => {
+                        handle(import.module, import.name, import.ty)?;
+                    }
+                    wasmparser::Imports::Compact1 { module: m, items } => {
+                        for item in items {
+                            let item = item?;
+                            handle(m, item.name, item.ty)?;
+                        }
+                    }
+                    wasmparser::Imports::Compact2 {
+                        module: m,
+                        ty,
+                        names,
+                    } => {
+                        for name in names {
+                            let name = name?;
+                            handle(m, name, ty)?;
+                        }
+                    }
+                }
             }
         }
         Payload::GlobalSection(reader) => {
@@ -273,61 +314,69 @@ fn handle_payload<'a>(
                     true
                 }
                 KnownCustom::Unknown => {
-                    if reader.name() == ".debug_info" {
-                        dwarf.debug_info =
-                            gimli::DebugInfo::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_abbrev" {
-                        dwarf.debug_abbrev =
-                            gimli::DebugAbbrev::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_addr" {
-                        dwarf.debug_addr = gimli::DebugAddr::from(gimli::EndianSlice::new(
-                            reader.data(),
-                            gimli::LittleEndian,
-                        ));
-                        true
-                    } else if reader.name() == ".debug_aranges" {
-                        dwarf.debug_aranges =
-                            gimli::DebugAranges::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_line" {
-                        dwarf.debug_line =
-                            gimli::DebugLine::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_line_str" {
-                        dwarf.debug_line_str =
-                            gimli::DebugLineStr::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_str" {
-                        dwarf.debug_str = gimli::DebugStr::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_str_offsets" {
-                        dwarf.debug_str_offsets = gimli::DebugStrOffsets::from(
-                            gimli::EndianSlice::new(reader.data(), gimli::LittleEndian),
-                        );
-                        true
-                    } else if reader.name() == ".debug_types" {
-                        dwarf.debug_types =
-                            gimli::DebugTypes::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_loc" {
-                        extra_sections.debug_loc =
-                            gimli::DebugLoc::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_loclists" {
-                        extra_sections.debug_loclists =
-                            gimli::DebugLocLists::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_ranges" {
-                        extra_sections.debug_ranges =
-                            gimli::DebugRanges::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else if reader.name() == ".debug_rnglists" {
-                        extra_sections.debug_rnglists =
-                            gimli::DebugRngLists::new(reader.data(), gimli::LittleEndian);
-                        true
-                    } else {
+                    #[cfg(feature = "dwarf")]
+                    {
+                        if reader.name() == ".debug_info" {
+                            dwarf.debug_info =
+                                gimli::DebugInfo::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_abbrev" {
+                            dwarf.debug_abbrev =
+                                gimli::DebugAbbrev::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_addr" {
+                            dwarf.debug_addr = gimli::DebugAddr::from(gimli::EndianSlice::new(
+                                reader.data(),
+                                gimli::LittleEndian,
+                            ));
+                            true
+                        } else if reader.name() == ".debug_aranges" {
+                            dwarf.debug_aranges =
+                                gimli::DebugAranges::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_line" {
+                            dwarf.debug_line =
+                                gimli::DebugLine::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_line_str" {
+                            dwarf.debug_line_str =
+                                gimli::DebugLineStr::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_str" {
+                            dwarf.debug_str =
+                                gimli::DebugStr::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_str_offsets" {
+                            dwarf.debug_str_offsets = gimli::DebugStrOffsets::from(
+                                gimli::EndianSlice::new(reader.data(), gimli::LittleEndian),
+                            );
+                            true
+                        } else if reader.name() == ".debug_types" {
+                            dwarf.debug_types =
+                                gimli::DebugTypes::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_loc" {
+                            extra_sections.debug_loc =
+                                gimli::DebugLoc::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_loclists" {
+                            extra_sections.debug_loclists =
+                                gimli::DebugLocLists::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_ranges" {
+                            extra_sections.debug_ranges =
+                                gimli::DebugRanges::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else if reader.name() == ".debug_rnglists" {
+                            extra_sections.debug_rnglists =
+                                gimli::DebugRngLists::new(reader.data(), gimli::LittleEndian);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    #[cfg(not(feature = "dwarf"))]
+                    {
                         false
                     }
                 }

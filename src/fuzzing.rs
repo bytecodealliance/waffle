@@ -75,7 +75,7 @@ fn fuzzing_config() -> wasm_smith::Config {
         max_exports: 12,
         allow_start_export: true,
         canonicalize_nans: true,
-        max_memory32_pages: 1,
+        max_memory32_bytes: 1 << 16,
         ..Default::default()
     }
 }

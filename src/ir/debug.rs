@@ -2,6 +2,7 @@
 
 use crate::declare_entity;
 use crate::entity::EntityVec;
+#[cfg(feature = "dwarf")]
 use addr2line::gimli;
 use std::collections::hash_map::Entry as HashEntry;
 use std::collections::HashMap;
@@ -67,6 +68,7 @@ pub struct DebugMap {
 }
 
 impl DebugMap {
+    #[cfg(feature = "dwarf")]
     pub(crate) fn from_dwarf<R: gimli::Reader>(
         dwarf: gimli::Dwarf<R>,
         debug: &mut Debug,

@@ -21,7 +21,7 @@ struct CFG {
 }
 
 impl CFG {
-    fn to_module(&self) -> Option<Module> {
+    fn to_module(&self) -> Option<Module<'_>> {
         let mut module = Module::empty();
         let sig = module.signatures.push(SignatureData {
             params: vec![Type::I32],

@@ -8,26 +8,41 @@ edition = "2018"
 repository = "https://github.com/bytecodealliance/waffle"
 
 [dependencies]
-wasmparser = "0.212"
-wasm-encoder = "0.212"
+wasmparser = { version = "0.248", default-features = false, features = ["std", "validate", "simd"] }
+wasm-encoder = { version = "0.248", default-features = false }
 anyhow = "1.0"
-structopt = "0.3"
 log = "0.4"
-env_logger = "0.11"
 fxhash = "0.2"
 smallvec = "1.13"
-rayon = "1.10"
-lazy_static = "1.4"
-libc = "0.2"
-addr2line = "0.21"
 
-# For fuzzing only. Versions must match those in fuzz/Cargo.toml.
+# Optional dependencies below.
+
+rayon = { version = "1.10", optional = true }
+addr2line = { version = "0.21", optional = true }
+structopt = { version = "0.3", optional = true }
+env_logger = { version = "0.11", optional = true }
 libfuzzer-sys = { version = "0.4.7", optional = true }
-wasm-smith = { version = "0.202", optional = true }
+wasm-smith = { version = "0.248", optional = true }
 
 [dev-dependencies]
-wat = "1.212.0"
+wat = "1.248.0"
+env_logger = "0.11"
 
 [features]
 default = []
+
+# Enable parallelism in the backend via rayon.
+parallel = ["dep:rayon"]
+
+# Enable DWARF debug-info parsing/preservation via addr2line/gimli.
+dwarf = ["dep:addr2line"]
+
+# Enable the `waffle-util` command-line tool.
+cli = ["dep:structopt", "dep:env_logger"]
+
+# Enable fuzzing entrypoints.
 fuzzing = ["libfuzzer-sys", "wasm-smith"]
+
+[[bin]]
+name = "waffle-util"
+required-features = ["cli"]
