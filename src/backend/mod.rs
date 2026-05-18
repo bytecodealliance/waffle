@@ -268,7 +268,7 @@ impl<'a> WasmFuncBackend<'a> {
                 }
                 self.lower_op(op, func);
                 if root {
-                    for &local in &ctx.locals.values[value] {
+                    for &local in ctx.locals.values[value].iter().rev() {
                         func.instruction(
                             &wasm_encoder::Instruction::LocalSet(local.index() as u32),
                         );
