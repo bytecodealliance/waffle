@@ -2,7 +2,7 @@
 
 use super::{Func, FuncDecl, FunctionBody, Module, SourceLoc, ValueDef};
 use crate::entity::EntityRef;
-use std::collections::HashMap;
+use fxhash::FxHashMap as HashMap;
 use std::fmt::{self, Display, Formatter, Result as FmtResult};
 
 /// Hooks to print information after instruction, before and after blocks
@@ -253,7 +253,7 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
         if let Some(func) = self.module.start_func {
             writeln!(f, "    start = {}", func)?;
         }
-        let mut sig_strs = HashMap::new();
+        let mut sig_strs = HashMap::default();
         for (sig, sig_data) in self.module.signatures.entries() {
             let arg_tys = sig_data
                 .params

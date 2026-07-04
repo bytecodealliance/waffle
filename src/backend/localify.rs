@@ -5,8 +5,8 @@ use crate::backend::treeify::Trees;
 use crate::cfg::CFGInfo;
 use crate::entity::{EntityVec, PerEntity};
 use crate::ir::{Block, FunctionBody, Local, Type, Value, ValueDef};
+use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::{smallvec, SmallVec};
-use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 #[derive(Clone, Debug, Default)]
@@ -242,13 +242,13 @@ impl<'a> Context<'a> {
         ranges.sort_unstable_by_key(|(val, range)| (range.start, *val));
 
         // Keep a list of expiring Locals by expiry point.
-        let mut expiring: HashMap<usize, SmallVec<[(Type, Local); 8]>> = HashMap::new();
+        let mut expiring: HashMap<usize, SmallVec<[(Type, Local); 8]>> = HashMap::default();
 
         // Iterate over allocation space, processing range starts (at
         // which point we allocate) and ends (at which point we add to
         // the freelist).
         let mut range_idx = 0;
-        let mut freelist: HashMap<Type, Vec<Local>> = HashMap::new();
+        let mut freelist: HashMap<Type, Vec<Local>> = HashMap::default();
 
         for i in 0..self.points {
             // Process ends. (Ends are exclusive, so we do them

@@ -12,7 +12,7 @@ use crate::pool::{ListPool, ListRef};
 use crate::Operator;
 use anyhow::Result;
 use fxhash::FxHashMap;
-use std::collections::HashSet;
+use fxhash::FxHashSet as HashSet;
 
 /// A declaration of a function: there is one `FuncDecl` per `Func`
 /// index.

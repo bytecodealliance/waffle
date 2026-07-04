@@ -7,7 +7,8 @@
 use crate::cfg::CFGInfo;
 use crate::entity::PerEntity;
 use crate::ir::{Block, FunctionBody, Value, ValueDef};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeSet;
 
 pub(crate) fn run(body: &mut FunctionBody, cut_blocks: Option<HashSet<Block>>, cfg: &CFGInfo) {
     MaxSSAPass::new(cut_blocks).run(body, cfg);
@@ -30,7 +31,7 @@ impl MaxSSAPass {
         Self {
             cut_blocks,
             new_args: PerEntity::default(),
-            value_map: HashMap::new(),
+            value_map: HashMap::default(),
         }
     }
 

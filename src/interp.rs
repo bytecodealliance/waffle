@@ -5,7 +5,7 @@ use crate::ir::*;
 use crate::ops::Operator;
 use smallvec::{smallvec, SmallVec};
 
-use std::collections::HashMap;
+use fxhash::FxHashMap as HashMap;
 
 /// How large do we allow a Wasm memory to be when interpreting? Limit
 /// the size somewhat (apply an implementation limit) so we do not
@@ -156,7 +156,7 @@ impl InterpContext {
         let mut frame = InterpStackFrame {
             func,
             cur_block: body.entry,
-            values: HashMap::new(),
+            values: HashMap::default(),
         };
 
         for (&arg, &(_, blockparam)) in args.iter().zip(body.blocks[body.entry].params.iter()) {
