@@ -12,7 +12,7 @@
 use crate::cfg::CFGInfo;
 use crate::entity::EntityRef;
 use crate::ir::{Block, BlockTarget, FunctionBody, Terminator, Type, Value};
-use std::collections::HashSet;
+use fxhash::FxHashSet as HashSet;
 use std::convert::TryFrom;
 
 #[derive(Clone, Debug)]
@@ -134,9 +134,9 @@ impl<'a, 'b> Context<'a, 'b> {
         body: &FunctionBody,
         cfg: &CFGInfo,
     ) -> anyhow::Result<(HashSet<Block>, HashSet<Block>)> {
-        let mut loop_headers = HashSet::new();
-        let mut branched_once = HashSet::new();
-        let mut merge_nodes = HashSet::new();
+        let mut loop_headers = HashSet::default();
+        let mut branched_once = HashSet::default();
+        let mut merge_nodes = HashSet::default();
 
         for (block_rpo, &block) in cfg.rpo.entries() {
             for &succ in &body.blocks[block].succs {
