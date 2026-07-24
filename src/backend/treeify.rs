@@ -42,7 +42,6 @@ impl Trees {
         let mut multi_use = HashSet::default();
 
         for block_def in body.blocks.values() {
-            let mut last_non_pure = None;
             for &value in &block_def.insts {
                 match &body.values[value] {
                     &ValueDef::Operator(op, args, _) => {
@@ -71,16 +70,12 @@ impl Trees {
                             } else if let Some(old_owner) = owner.remove(&arg) {
                                 owned.remove(&old_owner);
                                 multi_use.insert(arg);
-                            } else if Self::is_movable(body, arg) || Some(arg) == last_non_pure {
+                            } else if Self::is_movable(body, arg) {
                                 let pos = u16::try_from(i).unwrap();
                                 let value_arg = ValueArg(value, pos);
                                 owner.insert(arg, value_arg);
                                 owned.insert(value_arg, arg);
                             }
-                        }
-
-                        if !op.is_pure() {
-                            last_non_pure = Some(value);
                         }
                     }
                     &ValueDef::PickOutput(..) => {
