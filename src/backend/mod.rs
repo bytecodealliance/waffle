@@ -10,6 +10,9 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::convert::TryFrom;
 
+pub(crate) mod bitset;
+pub(crate) mod cross_block_ids;
+pub(crate) mod dense_live_set;
 pub mod reducify;
 use reducify::Reducifier;
 pub mod stackify;

@@ -1,11 +1,21 @@
 //! Localification: a simple form of register allocation that picks
 //! locations for SSA values in Wasm locals.
+//!
+//! Performance notes: liveness sets and live-range maps are keyed by
+//! `Value`, a dense index space, so all per-value state lives in flat
+//! arrays. The liveness fixpoint additionally runs over a compacted
+//! index space of only the cross-block values (values with a use
+//! outside their defining block), and we track cross-block liveness
+//! with bitsets indexed by this index space.
 
+use crate::backend::bitset::Bitset;
+use crate::backend::cross_block_ids::{CrossBlockId, CrossBlockValues};
+use crate::backend::dense_live_set::DenseLiveSet;
 use crate::backend::treeify::Trees;
 use crate::cfg::CFGInfo;
-use crate::entity::{EntityVec, PerEntity};
+use crate::entity::{EntityRef, EntityVec, PerEntity};
 use crate::ir::{Block, FunctionBody, Local, Type, Value, ValueDef};
-use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use fxhash::FxHashMap as HashMap;
 use smallvec::{smallvec, SmallVec};
 use std::ops::Range;
 
@@ -27,13 +37,19 @@ struct Context<'a> {
     trees: &'a Trees,
     results: Localifier,
 
-    /// Precise liveness for each block: live Values at the end.
-    block_end_live: PerEntity<Block, HashSet<Value>>,
+    /// Two-way map between `Value` and `CrossBlockId` for the compacted
+    /// inter-block value index space.
+    cross_blocks: CrossBlockValues,
+
+    /// Precise liveness for each block: cross-block values live at the
+    /// end, as a bitset over compact ids.
+    block_end_live: PerEntity<Block, Bitset>,
 
     /// Liveranges for each Value, in an arbitrary index space
     /// (concretely, the span of first to last instruction visit step
-    /// index in an RPO walk over the function body).
-    ranges: HashMap<Value, Range<usize>>,
+    /// index in an RPO walk over the function body). `usize::MAX`
+    /// start means "no range recorded".
+    ranges: Vec<Range<usize>>,
     /// Number of points.
     points: usize,
 }
@@ -47,6 +63,10 @@ trait Visitor {
     fn pre_term(&mut self) {}
     fn post_params(&mut self) {}
     fn pre_params(&mut self) {}
+}
+
+fn is_tree_or_remat(value: Value, trees: &Trees) -> bool {
+    trees.owner.contains_key(&value) || trees.remat.contains(&value)
 }
 
 struct BlockVisitor<'a, V: Visitor> {
@@ -74,7 +94,7 @@ impl<'a, V: Visitor> BlockVisitor<'a, V> {
         self.visitor.pre_term();
 
         for &inst in self.body.blocks[block].insts.iter().rev() {
-            if self.trees.owner.contains_key(&inst) || self.trees.remat.contains(&inst) {
+            if is_tree_or_remat(inst, self.trees) {
                 continue;
             }
             self.visitor.post_inst(inst);
@@ -107,9 +127,14 @@ impl<'a, V: Visitor> BlockVisitor<'a, V> {
             self.visit_use(value);
             return;
         }
-        if self.trees.owner.contains_key(&value) {
-            // If this is a treeified value, then don't process the use,
-            // but process the instruction directly here.
+        if is_tree_or_remat(value, self.trees) {
+            // If this is a treeified or rematerialized value, then
+            // don't process the use, but process the instruction
+            // directly here. (Lowering rematerializes remat values at
+            // each use and never lowers their defs, so a remat use
+            // must not keep a local alive: its def is never visited
+            // and it would otherwise be tracked as live everywhere,
+            // holding a dead local for the whole function.)
             self.visit_inst(value, /* root = */ false);
         } else {
             // Otherwise, this is a proper use.
@@ -133,43 +158,71 @@ impl<'a> Context<'a> {
             cfg,
             trees,
             results,
+            cross_blocks: CrossBlockValues::default(),
             block_end_live: PerEntity::default(),
-            ranges: HashMap::default(),
+            ranges: vec![usize::MAX..usize::MAX; body.values.len()],
             points: 0,
         }
     }
 
+    /// Assign compact ids to the values with a (proper) use outside
+    /// the block where their def is VISITED; only those can appear in
+    /// a liveness set. A def the block walk skips (treeified or remat
+    /// insts) never cancels its uses, so such values stay tracked
+    /// everywhere, matching the walk's behavior.
+    fn find_cross_block_values(&mut self) {
+        self.cross_blocks = CrossBlockValues::build(self.body, self.trees);
+    }
+
     fn compute_liveness(&mut self) {
-        struct LivenessVisitor {
-            live: HashSet<Value>,
+        struct LivenessVisitor<'b> {
+            cross_blocks: &'b CrossBlockValues,
+            live: DenseLiveSet,
         }
-        impl Visitor for LivenessVisitor {
+        impl<'b> Visitor for LivenessVisitor<'b> {
             fn visit_use(&mut self, value: Value) {
-                self.live.insert(value);
+                if let Some(id) = self.cross_blocks.get(value) {
+                    self.live.set_live(id.as_u32());
+                }
             }
             fn visit_def(&mut self, value: Value) {
-                self.live.remove(&value);
+                if let Some(id) = self.cross_blocks.get(value) {
+                    self.live.set_dead(id.as_u32());
+                }
             }
         }
 
+        let mut visitor = BlockVisitor::new(
+            self.body,
+            self.trees,
+            LivenessVisitor {
+                cross_blocks: &self.cross_blocks,
+                live: DenseLiveSet::new(self.cross_blocks.len()),
+            },
+        );
         let mut workqueue: Vec<Block> = self.cfg.rpo.values().cloned().collect();
-        let mut workqueue_set: HashSet<Block> = workqueue.iter().cloned().collect();
+        let mut workqueue_set = vec![true; self.body.blocks.len()];
         while let Some(block) = workqueue.pop() {
-            workqueue_set.remove(&block);
-            let live = self.block_end_live[block].clone();
-            let mut visitor = BlockVisitor::new(self.body, self.trees, LivenessVisitor { live });
+            workqueue_set[block.index()] = false;
+            visitor.visitor.live.next_epoch();
+            for id in self.block_end_live[block].iter() {
+                visitor.visitor.live.set_live(id);
+            }
             visitor.visit_block(block);
-            let live = visitor.visitor.live;
 
+            // Insert the live-in ids straight into each pred's
+            // live-out bitset.
+            let live = &visitor.visitor.live;
             for &pred in &self.body.blocks[block].preds {
                 let pred_live = &mut self.block_end_live[pred];
                 let mut changed = false;
-                for &value in &live {
-                    if pred_live.insert(value) {
+                for &id in live.touched() {
+                    if live.is_live(id) && pred_live.insert(id) {
                         changed = true;
                     }
                 }
-                if changed && workqueue_set.insert(pred) {
+                if changed && !workqueue_set[pred.index()] {
+                    workqueue_set[pred.index()] = true;
                     workqueue.push(pred);
                 }
             }
@@ -181,8 +234,22 @@ impl<'a> Context<'a> {
 
         struct LiveRangeVisitor<'b> {
             point: &'b mut usize,
-            live: HashMap<Value, usize>,
-            ranges: &'b mut HashMap<Value, Range<usize>>,
+            /// Live values in the current block walk; the range start
+            /// (visit point of the last use seen) rides in `start`.
+            live: DenseLiveSet,
+            start: &'b mut [usize],
+            ranges: &'b mut [Range<usize>],
+        }
+        impl<'b> LiveRangeVisitor<'b> {
+            fn record_def(&mut self, value: Value, range: Range<usize>) {
+                let existing = &mut self.ranges[value.index()];
+                if existing.start == usize::MAX {
+                    *existing = range;
+                } else {
+                    existing.start = std::cmp::min(existing.start, range.start);
+                    existing.end = std::cmp::max(existing.end, range.end);
+                }
+            }
         }
         impl<'b> Visitor for LiveRangeVisitor<'b> {
             fn pre_params(&mut self) {
@@ -195,30 +262,35 @@ impl<'a> Context<'a> {
                 *self.point += 1;
             }
             fn visit_use(&mut self, value: Value) {
-                self.live.entry(value).or_insert(*self.point);
+                if self.live.set_live(value.index() as u32) {
+                    self.start[value.index()] = *self.point;
+                }
             }
             fn visit_def(&mut self, value: Value) {
-                let range = if let Some(start) = self.live.remove(&value) {
-                    start..(*self.point + 1)
+                let range = if self.live.set_dead(value.index() as u32) {
+                    self.start[value.index()]..(*self.point + 1)
                 } else {
                     *self.point..(*self.point + 1)
                 };
-                let existing_range = self.ranges.entry(value).or_insert(range.clone());
-                existing_range.start = std::cmp::min(existing_range.start, range.start);
-                existing_range.end = std::cmp::max(existing_range.end, range.end);
+                self.record_def(value, range);
             }
         }
 
+        let mut start = vec![0usize; self.body.values.len()];
+        let mut live = DenseLiveSet::new(self.body.values.len());
         for &block in self.cfg.rpo.values().rev() {
+            live.next_epoch();
             let visitor = LiveRangeVisitor {
-                live: HashMap::default(),
+                live,
+                start: &mut start,
                 point: &mut point,
                 ranges: &mut self.ranges,
             };
-            let mut visitor = BlockVisitor::new(&self.body, &self.trees, visitor);
+            let mut visitor = BlockVisitor::new(&self.body, self.trees, visitor);
             // Live-outs to succ blocks: in this block-local
             // handling, model them as uses as the end of the block.
-            for &livein in &self.block_end_live[block] {
+            for id in self.block_end_live[block].iter() {
+                let livein = self.cross_blocks.value(CrossBlockId::new(id));
                 let livein = self.body.resolve_alias(livein);
                 visitor.visitor.visit_use(livein);
             }
@@ -226,10 +298,19 @@ impl<'a> Context<'a> {
             visitor.visit_block(block);
             // Live-ins from pred blocks: anything still live has a
             // virtual def at top of block.
-            let still_live = visitor.visitor.live.keys().cloned().collect::<Vec<_>>();
-            for live in still_live {
-                visitor.visitor.visit_def(live);
+            let still_live: Vec<Value> = visitor
+                .visitor
+                .live
+                .touched()
+                .iter()
+                .copied()
+                .filter(|&i| visitor.visitor.live.is_live(i))
+                .map(|i| Value::new(i as usize))
+                .collect();
+            for v in still_live {
+                visitor.visitor.visit_def(v);
             }
+            live = visitor.visitor.live;
         }
 
         self.points = point + 1;
@@ -237,8 +318,13 @@ impl<'a> Context<'a> {
 
     fn allocate(&mut self) {
         // Sort values by ranges' starting points, then value to break ties.
-        let mut ranges: Vec<(Value, std::ops::Range<usize>)> =
-            self.ranges.iter().map(|(k, v)| (*k, v.clone())).collect();
+        let mut ranges: Vec<(Value, std::ops::Range<usize>)> = self
+            .ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.start != usize::MAX)
+            .map(|(i, r)| (Value::new(i), r.clone()))
+            .collect();
         ranges.sort_unstable_by_key(|(val, range)| (range.start, *val));
 
         // Keep a list of expiring Locals by expiry point.
@@ -302,6 +388,7 @@ impl<'a> Context<'a> {
     }
 
     fn compute(mut self) -> Localifier {
+        self.find_cross_block_values();
         self.compute_liveness();
         self.find_ranges();
         self.allocate();
