@@ -30,8 +30,7 @@ impl CrossBlockId {
     /// Construct a `CrossBlockId` from a raw u32. Used when the id
     /// comes from iterating over a bitset or dense array.
     pub fn new(n: u32) -> Self {
-        // SAFETY: n+1 is always >= 1, so never zero.
-        Self(NonZeroU32::new(n + 1).unwrap())
+        Self(NonZeroU32::new(n.checked_add(1).unwrap()).unwrap())
     }
 
     /// The inner numeric value, used for indexing into bitsets and

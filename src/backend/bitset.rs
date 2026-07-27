@@ -36,3 +36,72 @@ impl Bitset {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty() {
+        let b = Bitset::default();
+        assert_eq!(b.iter().collect::<Vec<_>>(), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn insert_returns_whether_newly_set() {
+        let mut b = Bitset::default();
+        assert!(b.insert(0));
+        assert!(!b.insert(0));
+        assert!(b.insert(63));
+        assert!(b.insert(64));
+        assert!(!b.insert(63));
+        assert!(!b.insert(64));
+    }
+
+    #[test]
+    fn iter_single_word() {
+        let mut b = Bitset::default();
+        for i in [3, 0, 17, 63] {
+            b.insert(i);
+        }
+        assert_eq!(b.iter().collect::<Vec<_>>(), vec![0, 3, 17, 63]);
+    }
+
+    #[test]
+    fn iter_across_words() {
+        let mut b = Bitset::default();
+        for i in [200, 64, 63, 1, 128] {
+            b.insert(i);
+        }
+        assert_eq!(b.iter().collect::<Vec<_>>(), vec![1, 63, 64, 128, 200]);
+    }
+
+    #[test]
+    fn word_boundaries() {
+        let mut b = Bitset::default();
+        for i in [0, 63, 64, 127, 128, 191, 192] {
+            assert!(b.insert(i));
+        }
+        assert_eq!(
+            b.iter().collect::<Vec<_>>(),
+            vec![0, 63, 64, 127, 128, 191, 192]
+        );
+    }
+
+    #[test]
+    fn sparse_growth() {
+        let mut b = Bitset::default();
+        assert!(b.insert(10_000));
+        assert!(b.insert(5));
+        assert_eq!(b.iter().collect::<Vec<_>>(), vec![5, 10_000]);
+    }
+
+    #[test]
+    fn duplicate_inserts_do_not_duplicate_in_iter() {
+        let mut b = Bitset::default();
+        b.insert(42);
+        b.insert(42);
+        b.insert(42);
+        assert_eq!(b.iter().collect::<Vec<_>>(), vec![42]);
+    }
+}
