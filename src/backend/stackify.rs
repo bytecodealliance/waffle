@@ -56,6 +56,33 @@ pub enum WasmBlock<'a> {
     Unreachable,
 }
 
+/// Note that we need to drop iteratively, avoiding recursion in the
+/// default derived impl, to avoid blowing the stack (the tree can get
+/// very deep).
+impl<'a> Drop for WasmBlock<'a> {
+    fn drop(&mut self) {
+        fn children<'a>(b: &mut WasmBlock<'a>, out: &mut Vec<WasmBlock<'a>>) {
+            match b {
+                WasmBlock::Block { body, .. } | WasmBlock::Loop { body, .. } => {
+                    out.append(body);
+                }
+                WasmBlock::If {
+                    if_true, if_false, ..
+                } => {
+                    out.append(if_true);
+                    out.append(if_false);
+                }
+                _ => {}
+            }
+        }
+        let mut work = vec![];
+        children(self, &mut work);
+        while let Some(mut b) = work.pop() {
+            children(&mut b, &mut work);
+        }
+    }
+}
+
 /// A Wasm branch target label: number of scopes outward to branch to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WasmLabel(u32);

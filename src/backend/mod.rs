@@ -105,47 +105,73 @@ impl<'a> WasmFuncBackend<'a> {
         block: &WasmBlock<'_>,
         func: &mut wasm_encoder::Function,
     ) {
-        match block {
-            WasmBlock::Block { body, .. } => {
-                func.instruction(&wasm_encoder::Instruction::Block(
-                    wasm_encoder::BlockType::Empty,
-                ));
-                for sub_block in &body[..] {
-                    self.lower_block(ctx, sub_block, func);
+        enum Work<'b, 'a> {
+            Block(&'b WasmBlock<'a>),
+            Else,
+            End,
+        }
+        let mut work = vec![Work::Block(block)];
+        while let Some(w) = work.pop() {
+            let block = match w {
+                Work::Block(b) => b,
+                Work::Else => {
+                    func.instruction(&wasm_encoder::Instruction::Else);
+                    continue;
                 }
-                func.instruction(&wasm_encoder::Instruction::End);
+                Work::End => {
+                    func.instruction(&wasm_encoder::Instruction::End);
+                    continue;
+                }
+            };
+            match block {
+                WasmBlock::Block { body, .. } => {
+                    func.instruction(&wasm_encoder::Instruction::Block(
+                        wasm_encoder::BlockType::Empty,
+                    ));
+                    work.push(Work::End);
+                    work.extend(body.iter().rev().map(Work::Block));
+                }
+                WasmBlock::Loop { body, .. } => {
+                    func.instruction(&wasm_encoder::Instruction::Loop(
+                        wasm_encoder::BlockType::Empty,
+                    ));
+                    work.push(Work::End);
+                    work.extend(body.iter().rev().map(Work::Block));
+                }
+                WasmBlock::If {
+                    cond,
+                    if_true,
+                    if_false,
+                } => {
+                    self.lower_value(ctx, *cond, func);
+                    func.instruction(&wasm_encoder::Instruction::If(
+                        wasm_encoder::BlockType::Empty,
+                    ));
+                    work.push(Work::End);
+                    if if_false.len() > 0 {
+                        work.extend(if_false.iter().rev().map(Work::Block));
+                        work.push(Work::Else);
+                    }
+                    work.extend(if_true.iter().rev().map(Work::Block));
+                }
+                other => self.lower_leaf_block(ctx, other, func),
             }
-            WasmBlock::Loop { body, .. } => {
-                func.instruction(&wasm_encoder::Instruction::Loop(
-                    wasm_encoder::BlockType::Empty,
-                ));
-                for sub_block in &body[..] {
-                    self.lower_block(ctx, sub_block, func);
-                }
-                func.instruction(&wasm_encoder::Instruction::End);
+        }
+    }
+
+    /// Emit a `WasmBlock` with no nested blocks.
+    fn lower_leaf_block(
+        &self,
+        ctx: &CompileContext<'_>,
+        block: &WasmBlock<'_>,
+        func: &mut wasm_encoder::Function,
+    ) {
+        match block {
+            WasmBlock::Block { .. } | WasmBlock::Loop { .. } | WasmBlock::If { .. } => {
+                unreachable!("nested blocks are lowered by lower_block")
             }
             WasmBlock::Br { target } => {
                 func.instruction(&wasm_encoder::Instruction::Br(target.index()));
-            }
-            WasmBlock::If {
-                cond,
-                if_true,
-                if_false,
-            } => {
-                self.lower_value(ctx, *cond, func);
-                func.instruction(&wasm_encoder::Instruction::If(
-                    wasm_encoder::BlockType::Empty,
-                ));
-                for sub_block in &if_true[..] {
-                    self.lower_block(ctx, sub_block, func);
-                }
-                if if_false.len() > 0 {
-                    func.instruction(&wasm_encoder::Instruction::Else);
-                    for sub_block in &if_false[..] {
-                        self.lower_block(ctx, sub_block, func);
-                    }
-                }
-                func.instruction(&wasm_encoder::Instruction::End);
             }
             WasmBlock::Select {
                 selector,
