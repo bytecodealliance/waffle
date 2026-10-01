@@ -29,10 +29,8 @@ pub fn run(body: &mut FunctionBody) {
     }
     let mut blocks = std::mem::take(&mut body.blocks);
     for block in blocks.values_mut() {
-        block.terminator.update_targets(|target| {
-            for arg in &mut target.args {
-                *arg = body.resolve_alias(*arg);
-            }
+        block.terminator.update_uses(|u| {
+            *u = body.resolve_alias(*u);
         });
     }
     body.blocks = blocks;
