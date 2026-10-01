@@ -37,7 +37,10 @@ fn rewrite_target(
     forwardings[target.block.index()].clone()
 }
 
-pub(crate) fn run(body: &mut FunctionBody) {
+/// Run the empty-blocks pass, removing empty blocks (those that consist
+/// of only a direct-jump terminator) and threading through their
+/// blockparams to their terminator's target.
+pub fn run(body: &mut FunctionBody) {
     log::trace!(
         "empty_blocks: running on func:\n{}\n",
         body.display_verbose("| ", None)
