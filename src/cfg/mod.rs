@@ -34,6 +34,13 @@ pub struct CFGInfo {
     pub preds: PerEntity<Block, SmallVec<[Block; 4]>>,
     /// A given block's position in each predecessor's successor list.
     pub pred_pos: PerEntity<Block, SmallVec<[usize; 4]>>,
+    /// Pre- and post-order numbers of each reachable block in a DFS of
+    /// the dominator tree (`u32::MAX` if unreachable).
+    ///
+    /// This permits an O(1) dominance query: `a` dominates `b` iff
+    /// `b`'s interval nests in `a`'s interval.
+    dom_pre: PerEntity<Block, u32>,
+    dom_post: PerEntity<Block, u32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -92,6 +99,33 @@ impl CFGInfo {
             }
         }
 
+        // Number the dominator tree, iteratively (it can be as deep as
+        // the body is long).
+        let mut dom_pre: PerEntity<Block, u32> = PerEntity::default();
+        let mut dom_post: PerEntity<Block, u32> = PerEntity::default();
+        for block in f.blocks.iter() {
+            dom_pre[block] = u32::MAX;
+            dom_post[block] = u32::MAX;
+        }
+        let (mut pre, mut post) = (0u32, 0u32);
+        // (block, next child to visit)
+        let mut stack: Vec<(Block, Block)> = vec![(f.entry, domtree_children[f.entry].child)];
+        dom_pre[f.entry] = pre;
+        pre += 1;
+        while let Some(top) = stack.last_mut() {
+            let child = top.1;
+            if child.is_valid() {
+                top.1 = domtree_children[child].next;
+                dom_pre[child] = pre;
+                pre += 1;
+                stack.push((child, domtree_children[child].child));
+            } else {
+                dom_post[top.0] = post;
+                post += 1;
+                stack.pop();
+            }
+        }
+
         let mut def_block: PerEntity<Value, Block> = PerEntity::default();
         for (block, block_def) in f.blocks.entries() {
             for &(_, param) in &block_def.params {
@@ -128,11 +162,20 @@ impl CFGInfo {
             def_block,
             preds,
             pred_pos,
+            dom_pre,
+            dom_post,
         }
     }
 
+    /// Whether `a` dominates `b` (every block dominates itself; an
+    /// unreachable block dominates and is dominated by nothing else).
     pub fn dominates(&self, a: Block, b: Block) -> bool {
-        domtree::dominates(&self.domtree, a, b)
+        let r = a == b || {
+            let (pa, pb) = (self.dom_pre[a], self.dom_pre[b]);
+            pa != u32::MAX && pb != u32::MAX && pa <= pb && self.dom_post[b] <= self.dom_post[a]
+        };
+        debug_assert_eq!(r, domtree::dominates(&self.domtree, a, b));
+        r
     }
 
     pub fn dom_children<'a>(&'a self, block: Block) -> DomtreeChildIter<'a> {
