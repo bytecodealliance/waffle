@@ -170,12 +170,15 @@ impl CFGInfo {
     /// Whether `a` dominates `b` (every block dominates itself; an
     /// unreachable block dominates and is dominated by nothing else).
     pub fn dominates(&self, a: Block, b: Block) -> bool {
-        let r = a == b || {
-            let (pa, pb) = (self.dom_pre[a], self.dom_pre[b]);
-            pa != u32::MAX && pb != u32::MAX && pa <= pb && self.dom_post[b] <= self.dom_post[a]
-        };
-        debug_assert_eq!(r, domtree::dominates(&self.domtree, a, b));
-        r
+        if a == b {
+            // Fastpath: every block dominates itself.
+            return true;
+        }
+        if self.dom_pre[a] == u32::MAX || self.dom_pre[b] == u32::MAX {
+            // If either block is unreachable/dead, there is no dominance relation.
+            return false;
+        }
+        self.dom_pre[a] <= self.dom_pre[b] && self.dom_post[a] >= self.dom_post[b]
     }
 
     pub fn dom_children<'a>(&'a self, block: Block) -> DomtreeChildIter<'a> {
