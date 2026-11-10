@@ -89,6 +89,44 @@ fn parse_init_expr<'a>(init_expr: &wasmparser::ConstExpr<'a>) -> Result<Option<u
     })
 }
 
+/// The functions an element segment refers to, in order, with
+/// `Func::invalid()` for each `ref.null`.
+fn parse_element_items(items: wasmparser::ElementItems) -> Result<Vec<Func>> {
+    Ok(match items {
+        wasmparser::ElementItems::Functions(items) => {
+            let mut funcs = vec![];
+            for item in items {
+                let item = item?;
+                let func = Func::from(item);
+                funcs.push(func);
+            }
+            funcs
+        }
+        wasmparser::ElementItems::Expressions(_, const_exprs) => {
+            let mut funcs = vec![];
+            for const_expr in const_exprs {
+                let const_expr = const_expr?;
+                let mut func = None;
+                for op in const_expr.get_operators_reader() {
+                    let op = op?;
+                    match op {
+                        wasmparser::Operator::End => {}
+                        wasmparser::Operator::RefFunc { function_index } => {
+                            func = Some(Func::from(function_index));
+                        }
+                        wasmparser::Operator::RefNull { .. } => {
+                            func = Some(Func::invalid());
+                        }
+                        _ => panic!("Unsupported table-init op: {:?}", op),
+                    }
+                }
+                funcs.push(func.unwrap_or(Func::invalid()));
+            }
+            funcs
+        }
+    })
+}
+
 #[derive(Default)]
 struct ExtraSections<'a> {
     #[cfg(feature = "dwarf")]
@@ -402,39 +440,7 @@ fn handle_payload<'a>(
                     } => {
                         let table = Table::from(table_index.unwrap_or(0));
                         let offset = parse_init_expr(&offset_expr)?.unwrap_or(0) as usize;
-                        let funcs = match element.items {
-                            wasmparser::ElementItems::Functions(items) => {
-                                let mut funcs = vec![];
-                                for item in items {
-                                    let item = item?;
-                                    let func = Func::from(item);
-                                    funcs.push(func);
-                                }
-                                funcs
-                            }
-                            wasmparser::ElementItems::Expressions(_, const_exprs) => {
-                                let mut funcs = vec![];
-                                for const_expr in const_exprs {
-                                    let const_expr = const_expr?;
-                                    let mut func = None;
-                                    for op in const_expr.get_operators_reader() {
-                                        let op = op?;
-                                        match op {
-                                            wasmparser::Operator::End => {}
-                                            wasmparser::Operator::RefFunc { function_index } => {
-                                                func = Some(Func::from(function_index));
-                                            }
-                                            wasmparser::Operator::RefNull { .. } => {
-                                                func = Some(Func::invalid());
-                                            }
-                                            _ => panic!("Unsupported table-init op: {:?}", op),
-                                        }
-                                    }
-                                    funcs.push(func.unwrap_or(Func::invalid()));
-                                }
-                                funcs
-                            }
-                        };
+                        let funcs = parse_element_items(element.items)?;
 
                         let table_items = module.tables[table].func_elements.as_mut().unwrap();
                         let new_size = offset.checked_add(funcs.len()).ok_or_else(|| {
