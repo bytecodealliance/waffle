@@ -117,7 +117,10 @@ fn parse_element_items(items: wasmparser::ElementItems) -> Result<Vec<Func>> {
                         wasmparser::Operator::RefNull { .. } => {
                             func = Some(Func::invalid());
                         }
-                        _ => panic!("Unsupported table-init op: {:?}", op),
+                        _ => bail!(FrontendError::UnsupportedFeature(format!(
+                            "Unsupported element segment item operator: {:?}",
+                            op
+                        ))),
                     }
                 }
                 funcs.push(func.unwrap_or(Func::invalid()));
@@ -2069,5 +2072,28 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn element_item_global_get_is_unsupported() {
+        let bytes = wat::parse_str(
+            r#"
+            (module
+              (import "m" "g" (global funcref))
+              (table 1 funcref)
+              (elem (i32.const 0) funcref (global.get 0)))
+            "#,
+        )
+        .unwrap();
+        let err = Module::from_wasm_bytes(&bytes, &FrontendOptions::default()).unwrap_err();
+        assert!(matches!(
+            err.downcast::<FrontendError>(),
+            Ok(FrontendError::UnsupportedFeature(_))
+        ));
     }
 }
