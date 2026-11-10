@@ -1179,10 +1179,8 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
     let mut active_elements = vec![];
     for (table, table_data) in module.tables.entries() {
         if let Some(elts) = &table_data.func_elements {
-            for (i, elt) in elts.iter().enumerate() {
-                if elt.is_valid() {
-                    active_elements.push((table, table_data.ty, i, std::slice::from_ref(elt)));
-                }
+            for (offset, run) in non_null_runs(elts) {
+                active_elements.push((table, table_data.ty, offset, run));
             }
         }
     }
@@ -1433,6 +1431,26 @@ fn element_items(ty: Type, funcs: &[Func]) -> Result<wasm_encoder::Elements<'sta
                 .collect(),
         ),
     ))
+}
+
+/// Splits `elts` into runs of consecutive valid entries. Each run is
+/// returned with the index of its first entry. `Func::invalid()` entries
+/// are not part of any run.
+fn non_null_runs(elts: &[Func]) -> Vec<(usize, &[Func])> {
+    let mut runs = vec![];
+    let mut i = 0;
+    while i < elts.len() {
+        if !elts[i].is_valid() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < elts.len() && elts[i].is_valid() {
+            i += 1;
+        }
+        runs.push((start, &elts[start..i]));
+    }
+    runs
 }
 
 fn const_init(ty: Type, value: Option<u64>) -> wasm_encoder::ConstExpr {
