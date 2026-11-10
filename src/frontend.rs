@@ -89,6 +89,23 @@ fn parse_init_expr<'a>(init_expr: &wasmparser::ConstExpr<'a>) -> Result<Option<u
     })
 }
 
+/// The type of an element segment's elements. Fails for element
+/// types other than `funcref` and typed function references, because
+/// `Type` has no representation for them.
+fn element_type(items: &wasmparser::ElementItems) -> Result<Type> {
+    match items {
+        wasmparser::ElementItems::Functions(_) => Ok(Type::FuncRef),
+        wasmparser::ElementItems::Expressions(ty, _)
+            if *ty == wasmparser::RefType::FUNCREF || ty.type_index().is_some() =>
+        {
+            Ok((*ty).into())
+        }
+        wasmparser::ElementItems::Expressions(ty, _) => bail!(FrontendError::UnsupportedFeature(
+            format!("Unsupported element segment type: {:?}", ty)
+        )),
+    }
+}
+
 /// The functions an element segment refers to, in order, with
 /// `Func::invalid()` for each `ref.null`.
 fn parse_element_items(items: wasmparser::ElementItems) -> Result<Vec<Func>> {
@@ -317,11 +334,20 @@ fn handle_payload<'a>(
                 });
             }
         }
+        Payload::DataCountSection { .. } => {
+            module.has_data_count = true;
+        }
         Payload::DataSection(reader) => {
-            for segment in reader {
+            module.orig_data_segment_count = reader.count() as usize;
+            for (index, segment) in reader.into_iter().enumerate() {
                 let segment = segment?;
                 match &segment.kind {
-                    DataKind::Passive => {}
+                    DataKind::Passive => {
+                        module.passive_data_segments.push(PassiveDataSegment {
+                            index,
+                            data: segment.data.to_vec(),
+                        });
+                    }
                     DataKind::Active {
                         memory_index,
                         offset_expr,
@@ -432,11 +458,26 @@ fn handle_payload<'a>(
         }
         Payload::Version { .. } => {}
         Payload::ElementSection(reader) => {
-            for element in reader {
+            module.orig_element_segment_count = reader.count() as usize;
+            for (index, element) in reader.into_iter().enumerate() {
                 let element = element?;
                 match &element.kind {
-                    wasmparser::ElementKind::Passive => {}
-                    wasmparser::ElementKind::Declared => {}
+                    wasmparser::ElementKind::Passive => {
+                        module.element_segments.push(ElementSegment {
+                            index,
+                            kind: ElementSegmentKind::Passive,
+                            ty: element_type(&element.items)?,
+                            elements: parse_element_items(element.items)?,
+                        });
+                    }
+                    wasmparser::ElementKind::Declared => {
+                        module.element_segments.push(ElementSegment {
+                            index,
+                            kind: ElementSegmentKind::Declarative,
+                            ty: element_type(&element.items)?,
+                            elements: parse_element_items(element.items)?,
+                        });
+                    }
                     wasmparser::ElementKind::Active {
                         table_index,
                         offset_expr,
