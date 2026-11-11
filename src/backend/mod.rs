@@ -1000,8 +1000,8 @@ impl<'a> WasmFuncBackend<'a> {
                 Some(wasm_encoder::Instruction::CallRef(sig_index.index() as u32))
             }
             Operator::RefIsNull => Some(wasm_encoder::Instruction::RefIsNull),
-            Operator::RefNull { sig_index } => Some(wasm_encoder::Instruction::RefNull(
-                wasm_encoder::HeapType::Concrete(sig_index.index() as u32),
+            Operator::RefNull { ty } => Some(wasm_encoder::Instruction::RefNull(
+                wasm_encoder::RefType::from(*ty).heap_type,
             )),
             Operator::RefFunc { func_index } => {
                 Some(wasm_encoder::Instruction::RefFunc(func_index.index() as u32))
