@@ -147,6 +147,37 @@ fn parse_element_items(items: wasmparser::ElementItems) -> Result<Vec<Func>> {
     })
 }
 
+/// Converts a memory type to a `MemoryData` with no segments. Returns
+/// `FrontendError::UnsupportedFeature` for a 64-bit or shared memory.
+fn memory_data(ty: &wasmparser::MemoryType) -> Result<MemoryData> {
+    if ty.memory64 {
+        bail!(FrontendError::UnsupportedFeature("64-bit memory".into()));
+    }
+    if ty.shared {
+        bail!(FrontendError::UnsupportedFeature("shared memory".into()));
+    }
+    Ok(MemoryData {
+        initial_pages: ty.initial as usize,
+        maximum_pages: ty.maximum.map(|max| max as usize),
+        segments: vec![],
+    })
+}
+
+/// Converts a table type to a `TableData` with no elements. Returns
+/// `FrontendError::UnsupportedFeature` for a 64-bit table.
+fn table_data(ty: &wasmparser::TableType) -> Result<TableData> {
+    if ty.table64 {
+        bail!(FrontendError::UnsupportedFeature("64-bit table".into()));
+    }
+    Ok(TableData {
+        ty: ty.element_type.into(),
+        initial: ty.initial,
+        max: ty.maximum,
+        initializer: None,
+        func_elements: Some(vec![]),
+    })
+}
+
 #[derive(Default)]
 struct ExtraSections<'a> {
     #[cfg(feature = "dwarf")]
@@ -243,21 +274,11 @@ fn handle_payload<'a>(
                             ImportKind::Global(global)
                         }
                         TypeRef::Table(ty) => {
-                            let table = module.tables.push(TableData {
-                                ty: ty.element_type.into(),
-                                initial: ty.initial,
-                                max: ty.maximum,
-                                initializer: None,
-                                func_elements: Some(vec![]),
-                            });
+                            let table = module.tables.push(table_data(&ty)?);
                             ImportKind::Table(table)
                         }
                         TypeRef::Memory(mem) => {
-                            let mem = module.memories.push(MemoryData {
-                                initial_pages: mem.initial as usize,
-                                maximum_pages: mem.maximum.map(|max| max as usize),
-                                segments: vec![],
-                            });
+                            let mem = module.memories.push(memory_data(&mem)?);
                             ImportKind::Memory(mem)
                         }
                         t => {
@@ -313,6 +334,7 @@ fn handle_payload<'a>(
         Payload::TableSection(reader) => {
             for table in reader {
                 let table = table?;
+                let data = table_data(&table.ty)?;
                 let initializer = table_initializer(&table.init)?;
                 let func_elements = match initializer {
                     Some(func) if func.is_valid() => {
@@ -327,11 +349,9 @@ fn handle_payload<'a>(
                     _ => vec![],
                 };
                 module.tables.push(TableData {
-                    ty: table.ty.element_type.into(),
-                    initial: table.ty.initial,
-                    max: table.ty.maximum,
                     initializer,
                     func_elements: Some(func_elements),
+                    ..data
                 });
             }
         }
@@ -375,11 +395,7 @@ fn handle_payload<'a>(
         Payload::MemorySection(reader) => {
             for memory in reader {
                 let memory = memory?;
-                module.memories.push(MemoryData {
-                    initial_pages: memory.initial as usize,
-                    maximum_pages: memory.maximum.map(|max| max as usize),
-                    segments: vec![],
-                });
+                module.memories.push(memory_data(&memory)?);
             }
         }
         Payload::DataCountSection { .. } => {
