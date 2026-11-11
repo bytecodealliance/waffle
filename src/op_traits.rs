@@ -699,7 +699,7 @@ pub fn op_outputs(
         Operator::MemoryFill { .. } => Ok(Cow::Borrowed(&[])),
 
         Operator::V128Load { .. } => Ok(Cow::Borrowed(&[Type::V128])),
-        Operator::V128Load8x8S { .. } => Ok(Cow::Borrowed(&[Type::I32])),
+        Operator::V128Load8x8S { .. } => Ok(Cow::Borrowed(&[Type::V128])),
         Operator::V128Load8x8U { .. } => Ok(Cow::Borrowed(&[Type::V128])),
         Operator::V128Load16x4S { .. } => Ok(Cow::Borrowed(&[Type::V128])),
         Operator::V128Load16x4U { .. } => Ok(Cow::Borrowed(&[Type::V128])),
