@@ -210,7 +210,12 @@ impl<'a> WasmFuncBackend<'a> {
                     let from_ty = self.body.values[self.body.resolve_alias(from)]
                         .ty(&self.body.type_pool)
                         .unwrap();
-                    assert_eq!(from_ty, to_ty);
+                    assert!(
+                        from_ty.is_subtype_of(to_ty),
+                        "block argument type {} is not a subtype of {}",
+                        from_ty,
+                        to_ty
+                    );
                     if ctx.locals.values[from].len() == 1 {
                         assert_eq!(from_ty, ctx.locals.locals[ctx.locals.values[from][0]]);
                     }
