@@ -111,3 +111,28 @@ impl<'a> arbitrary::Arbitrary<'a> for ArbitraryModule {
         Ok(Self(wasm_smith::Module::new(fuzzing_config(), u)?))
     }
 }
+
+/// Generates a `wasm_smith::Config` from `u` with the proposals turned
+/// off that the frontend rejects or has no representation for.
+fn supported_config(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<wasm_smith::Config> {
+    let mut config: wasm_smith::Config = u.arbitrary()?;
+    config.gc_enabled = false;
+    config.exceptions_enabled = false;
+    config.threads_enabled = false;
+    config.tail_call_enabled = false;
+    config.memory64_enabled = false;
+    config.relaxed_simd_enabled = false;
+    config.extended_const_enabled = false;
+    Ok(config)
+}
+
+/// A `wasm_smith::Module` generated with `supported_config`.
+#[derive(Debug)]
+pub struct SupportedModule(pub wasm_smith::Module);
+
+impl<'a> arbitrary::Arbitrary<'a> for SupportedModule {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let config = supported_config(u)?;
+        Ok(Self(wasm_smith::Module::new(config, u)?))
+    }
+}
