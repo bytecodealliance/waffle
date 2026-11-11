@@ -142,6 +142,24 @@ impl From<Type> for wasm_encoder::RefType {
     }
 }
 
+impl Type {
+    /// Returns `true` if a value of type `self` is valid where a value of
+    /// type `other` is expected: the types are equal, `self` is a typed
+    /// function reference and `other` is `FuncRef`, or both are typed
+    /// function references with the same signature index and `other` is
+    /// nullable or `self` is not. Signature indices are compared by
+    /// index, not by the signatures they refer to.
+    pub(crate) fn is_subtype_of(self, other: Type) -> bool {
+        match (self, other) {
+            (Type::TypedFuncRef(..), Type::FuncRef) => true,
+            (Type::TypedFuncRef(sub_nullable, sub_sig), Type::TypedFuncRef(nullable, sig)) => {
+                sub_sig == sig && (nullable || !sub_nullable)
+            }
+            _ => self == other,
+        }
+    }
+}
+
 // Per-module index spaces:
 
 // A signature (list of parameter types and list of return types) in
