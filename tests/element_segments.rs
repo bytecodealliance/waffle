@@ -5,7 +5,12 @@ use waffle::wasmparser::{ElementItems, ElementKind, Operator, Parser, Payload, V
 use waffle::{FrontendOptions, Module, OptOptions};
 
 /// An active element segment as `(table, offset, function indices)`.
+/// `ref.null` items are `NULL`.
 type Segment = (u32, i32, Vec<u32>);
+
+/// The function index that `active_segments` returns for a `ref.null`
+/// item.
+const NULL: u32 = u32::MAX;
 
 /// The active element segments of a serialized module, in index order.
 fn active_segments(bytes: &[u8]) -> Vec<Segment> {
@@ -33,6 +38,7 @@ fn active_segments(bytes: &[u8]) -> Vec<Segment> {
                         .map(
                             |expr| match expr.unwrap().get_operators_reader().read().unwrap() {
                                 Operator::RefFunc { function_index } => function_index,
+                                Operator::RefNull { .. } => NULL,
                                 op => panic!("unexpected element expression {:?}", op),
                             },
                         )
@@ -76,5 +82,88 @@ fn null_entries_split_segments() {
     assert_eq!(
         active_segments(&output),
         vec![(0, 0, vec![0, 1]), (0, 3, vec![0])]
+    );
+}
+
+#[test]
+fn overwritten_table_entries_stay_declared() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (table 1 funcref)
+          (elem (i32.const 0) func 0)
+          (elem (i32.const 0) func 1)
+          (func (result i32) (ref.is_null (ref.func 0)))
+          (func))
+        "#,
+    )
+    .unwrap();
+    let module = Module::from_wasm_bytes(&input, &FrontendOptions::default()).unwrap();
+    let output = module.to_wasm_bytes().unwrap();
+    if let Err(e) = Validator::new().validate_all(&output) {
+        panic!("output does not validate: {}", e);
+    }
+    assert_eq!(
+        active_segments(&output),
+        vec![(0, 0, vec![0]), (0, 0, vec![1])]
+    );
+
+    let nulled = wat::parse_str(
+        r#"
+        (module
+          (table 2 funcref)
+          (elem (i32.const 0) func 0 1)
+          (elem (i32.const 0) funcref (ref.null func) (ref.null func))
+          (func)
+          (func))
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        active_segments(&roundtrip(&nulled)),
+        vec![(0, 0, vec![0, 1]), (0, 0, vec![NULL, NULL])]
+    );
+
+    let exported = wat::parse_str(
+        r#"
+        (module
+          (table 1 funcref)
+          (elem (i32.const 0) func 0)
+          (elem (i32.const 0) func 1)
+          (func (export "f"))
+          (func))
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        active_segments(&roundtrip(&exported)),
+        vec![(0, 0, vec![1]), (0, 0, vec![])]
+    );
+}
+
+#[test]
+fn overwritten_entries_beyond_table_contents_are_not_written() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (table 2 funcref)
+          (elem (i32.const 1) func 0)
+          (elem (i32.const 1) func 1)
+          (func)
+          (func))
+        "#,
+    )
+    .unwrap();
+    let mut module = Module::from_wasm_bytes(&input, &FrontendOptions::default()).unwrap();
+    let table = module.tables.values_mut().next().unwrap();
+    table.initial = 1;
+    table.func_elements.as_mut().unwrap().truncate(1);
+    let output = module.to_wasm_bytes().unwrap();
+    if let Err(e) = Validator::new().validate_all(&output) {
+        panic!("output does not validate: {}", e);
+    }
+    assert_eq!(
+        active_segments(&output),
+        vec![(0, 0, vec![]), (0, 0, vec![])]
     );
 }

@@ -67,6 +67,15 @@ pub struct Module<'a> {
     /// Passive and declarative element segments. Active element
     /// segments are part of `TableData::func_elements`.
     pub element_segments: Vec<ElementSegment>,
+    /// Functions that an active element segment wrote into a table
+    /// entry and a later active element segment overwrote. For each
+    /// function that nothing else in the output declares, the backend
+    /// emits an active element segment that writes the function into
+    /// its entry before the segments that write the table's final
+    /// contents. The backend ignores records whose index is not below
+    /// the length of their table's `func_elements`, and all records of
+    /// a table whose `func_elements` is `None`.
+    pub overwritten_elements: Vec<OverwrittenElement>,
     /// Whether the module had a DataCount section when it was
     /// parsed. The backend emits a DataCount section when this is set
     /// or when `passive_data_segments` is not empty.
@@ -164,6 +173,18 @@ pub struct ElementSegment {
     /// The segment's elements. `null` funcrefs are represented by
     /// `Func::invalid()`.
     pub elements: Vec<Func>,
+}
+
+/// A function that an active element segment wrote into a table entry
+/// and a later active element segment overwrote.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OverwrittenElement {
+    /// The table.
+    pub table: Table,
+    /// The index of the entry in the table.
+    pub index: usize,
+    /// The function that the entry held before it was overwritten.
+    pub func: Func,
 }
 
 /// A global-variable definition.
@@ -292,6 +313,7 @@ impl<'a> Module<'a> {
             custom_sections: BTreeMap::default(),
             passive_data_segments: vec![],
             element_segments: vec![],
+            overwritten_elements: vec![],
             has_data_count: false,
             orig_data_segment_count: 0,
             orig_element_segment_count: 0,
@@ -336,6 +358,7 @@ impl<'a> Module<'a> {
             custom_sections: BTreeMap::default(),
             passive_data_segments: self.passive_data_segments,
             element_segments: self.element_segments,
+            overwritten_elements: self.overwritten_elements,
             has_data_count: self.has_data_count,
             orig_data_segment_count: self.orig_data_segment_count,
             orig_element_segment_count: self.orig_element_segment_count,
@@ -438,6 +461,7 @@ impl<'a> Module<'a> {
             custom_sections: BTreeMap::default(),
             passive_data_segments: vec![],
             element_segments: vec![],
+            overwritten_elements: vec![],
             has_data_count: false,
             orig_data_segment_count: 0,
             orig_element_segment_count: 0,

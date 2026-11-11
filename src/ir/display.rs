@@ -284,6 +284,13 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
                 }
             }
         }
+        for element in &self.module.overwritten_elements {
+            writeln!(
+                f,
+                "  {}[{}]: overwritten {}",
+                element.table, element.index, element.func
+            )?;
+        }
         for (memory, memory_data) in self.module.memories.entries() {
             writeln!(
                 f,

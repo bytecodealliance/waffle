@@ -504,6 +504,16 @@ fn handle_payload<'a>(
                             }
                             table_items.resize(new_size, Func::invalid());
                         }
+                        for (i, &func) in funcs.iter().enumerate() {
+                            let old = table_items[offset + i];
+                            if old.is_valid() && old != func {
+                                module.overwritten_elements.push(OverwrittenElement {
+                                    table,
+                                    index: offset + i,
+                                    func: old,
+                                });
+                            }
+                        }
                         table_items[offset..new_size].copy_from_slice(&funcs[..]);
                     }
                 }

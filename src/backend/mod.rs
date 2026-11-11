@@ -3,11 +3,12 @@
 use crate::cfg::CFGInfo;
 use crate::entity::EntityRef;
 use crate::ir::{
-    ElementSegmentKind, ExportKind, Func, FuncDecl, FunctionBody, ImportKind, Module, Type, Value,
-    ValueDef,
+    ElementSegmentKind, ExportKind, Func, FuncDecl, FunctionBody, ImportKind, Module, Table, Type,
+    Value, ValueDef,
 };
 use crate::Operator;
 use anyhow::Result;
+use fxhash::FxHashSet;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::borrow::Cow;
@@ -1176,13 +1177,20 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
         into_mod.section(&start);
     }
 
+    let (overwritten, null_entries) = overwritten_element_segments(module);
     let mut active_elements = vec![];
+    for (table, offset, funcs) in &overwritten {
+        active_elements.push((*table, module.tables[*table].ty, *offset, &funcs[..]));
+    }
     for (table, table_data) in module.tables.entries() {
         if let Some(elts) = &table_data.func_elements {
             for (offset, run) in non_null_runs(elts) {
                 active_elements.push((table, table_data.ty, offset, run));
             }
         }
+    }
+    for (table, offset, funcs) in &null_entries {
+        active_elements.push((*table, module.tables[*table].ty, *offset, &funcs[..]));
     }
     let element_slots = segment_layout(
         active_elements,
@@ -1449,6 +1457,77 @@ fn non_null_runs(elts: &[Func]) -> Vec<(usize, &[Func])> {
             i += 1;
         }
         runs.push((start, &elts[start..i]));
+    }
+    runs
+}
+
+/// Returns the active element segments that write the functions in
+/// `Module::overwritten_elements`, and the segments that restore null
+/// entries, as two lists of `(table, offset, entries)`.
+///
+/// The first list writes each overwritten function into its entry,
+/// except for functions that a table's final contents, a passive or
+/// declarative segment, a function export or an earlier entry of the
+/// list contains. Records whose index is not below the length of their
+/// table's `func_elements`, or whose table has no `func_elements`, are
+/// ignored. The second list writes `ref.null` into each entry of
+/// the first list whose final content is null. Entries with consecutive
+/// indices in the same table share a segment. The first list must be
+/// applied before the segments for the tables' final contents, and the
+/// second after the first.
+fn overwritten_element_segments(
+    module: &Module,
+) -> (
+    Vec<(Table, usize, Vec<Func>)>,
+    Vec<(Table, usize, Vec<Func>)>,
+) {
+    let mut declared = FxHashSet::default();
+    for table_data in module.tables.values() {
+        declared.extend(table_data.func_elements.iter().flatten().copied());
+    }
+    for segment in &module.element_segments {
+        declared.extend(segment.elements.iter().copied());
+    }
+    for export in &module.exports {
+        if let ExportKind::Func(func) = export.kind {
+            declared.insert(func);
+        }
+    }
+    let mut writes = vec![];
+    let mut nulls = vec![];
+    for element in &module.overwritten_elements {
+        let elts = match &module.tables[element.table].func_elements {
+            Some(elts) if element.index < elts.len() => elts,
+            _ => continue,
+        };
+        if !element.func.is_valid() || !declared.insert(element.func) {
+            continue;
+        }
+        writes.push((element.table, element.index, element.func));
+        if !elts[element.index].is_valid() {
+            nulls.push((element.table, element.index, Func::invalid()));
+        }
+    }
+    writes.sort_by_key(|&(table, index, _)| (table, index));
+    nulls.sort_by_key(|&(table, index, _)| (table, index));
+    nulls.dedup();
+    (consecutive_runs(writes), consecutive_runs(nulls))
+}
+
+/// Groups `(table, index, func)` entries, sorted by table and index, into
+/// runs of consecutive indices in the same table. Each run is returned
+/// with its table and the index of its first entry.
+fn consecutive_runs(entries: Vec<(Table, usize, Func)>) -> Vec<(Table, usize, Vec<Func>)> {
+    let mut runs: Vec<(Table, usize, Vec<Func>)> = vec![];
+    for (table, index, func) in entries {
+        match runs.last_mut() {
+            Some((run_table, start, funcs))
+                if *run_table == table && *start + funcs.len() == index =>
+            {
+                funcs.push(func)
+            }
+            _ => runs.push((table, index, vec![func])),
+        }
     }
     runs
 }
