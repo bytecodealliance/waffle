@@ -7,8 +7,9 @@ fuzz_target!(|module: wasm_smith::Module| {
     let _ = env_logger::try_init();
     log::debug!("original module: {:?}", module);
     let orig_bytes = module.to_bytes();
-    let parsed_module =
-        Module::from_wasm_bytes(&orig_bytes[..], &FrontendOptions::default()).unwrap();
+    let Some(parsed_module) = waffle::fuzzing::parse(&orig_bytes[..]) else {
+        return;
+    };
     let roundtrip_bytes = parsed_module.to_wasm_bytes().unwrap();
     if let Ok(filename) = std::env::var("ROUNDTRIP_WASM_SAVE") {
         std::fs::write(filename, &roundtrip_bytes[..]).unwrap();

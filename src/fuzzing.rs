@@ -1,6 +1,27 @@
 //! Fuzzing-specific utilities.
 
+use crate::{FrontendError, FrontendOptions, Module};
 use libfuzzer_sys::arbitrary;
+
+/// Returns the value in `result`, or `None` if `result` holds a
+/// `FrontendError::UnsupportedFeature` or `FrontendError::TooLarge`.
+/// Panics on every other error.
+pub fn skip_unsupported<T>(result: anyhow::Result<T>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(e) => match e.downcast::<FrontendError>() {
+            Ok(FrontendError::UnsupportedFeature(_)) | Ok(FrontendError::TooLarge(_)) => None,
+            Ok(e) => panic!("Frontend error: {:?}", e),
+            Err(e) => panic!("Other error: {:?}", e),
+        },
+    }
+}
+
+/// Parses `bytes` with `Module::from_wasm_bytes` and default
+/// `FrontendOptions`. Errors are handled as in `skip_unsupported`.
+pub fn parse(bytes: &[u8]) -> Option<Module<'_>> {
+    skip_unsupported(Module::from_wasm_bytes(bytes, &FrontendOptions::default()))
+}
 
 /// Should this module be rejected early during fuzzing due to an
 /// unsupported feature?
