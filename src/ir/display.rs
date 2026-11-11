@@ -318,6 +318,13 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
                 segment.data.len()
             )?;
         }
+        for segment in &self.module.active_element_segments {
+            writeln!(
+                f,
+                "  elem segment {}: active {} {}",
+                segment.index, segment.table, segment.ty
+            )?;
+        }
         for segment in &self.module.element_segments {
             let kind = match segment.kind {
                 ElementSegmentKind::Passive => "passive",

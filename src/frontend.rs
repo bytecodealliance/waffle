@@ -531,6 +531,15 @@ fn handle_payload<'a>(
                         offset_expr,
                     } => {
                         let table = Table::from(table_index.unwrap_or(0));
+                        let ty = match &element.items {
+                            wasmparser::ElementItems::Functions(_) => Type::FuncRef,
+                            wasmparser::ElementItems::Expressions(ty, _) => (*ty).into(),
+                        };
+                        module.active_element_segments.push(ActiveElementSegment {
+                            index,
+                            table,
+                            ty,
+                        });
                         let offset = parse_init_expr(&offset_expr)?.unwrap_or(0) as usize;
                         let funcs = parse_element_items(element.items)?;
 

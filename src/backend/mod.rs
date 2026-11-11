@@ -8,11 +8,13 @@ use crate::ir::{
 };
 use crate::Operator;
 use anyhow::Result;
-use fxhash::FxHashSet;
+use fxhash::{FxHashMap, FxHashSet};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::convert::TryFrom;
+use std::hash::Hash;
 
 pub(crate) mod bitset;
 pub(crate) mod cross_block_ids;
@@ -1198,26 +1200,43 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
     for (table, offset, funcs) in &restores {
         active_elements.push((*table, module.tables[*table].ty, *offset, &funcs[..]));
     }
-    let element_slots = segment_layout(
-        active_elements,
+    // Each active segment is keyed by its element type, which is the
+    // element type of its table. An index that held an active segment in
+    // the input takes only segments of that segment's element type, so
+    // `table.init` in unexpanded bodies stays valid. The segments of one
+    // table share a key, so they keep their order.
+    let orig_active_elements = module
+        .active_element_segments
+        .iter()
+        .map(|segment| (segment.index, segment))
+        .collect::<FxHashMap<_, _>>();
+    let element_slots = segment_layout_by_key(
+        active_elements
+            .into_iter()
+            .map(|(table, ty, offset, funcs)| (ty, (table, ty, offset, funcs)))
+            .collect(),
         module
             .element_segments
             .iter()
             .map(|segment| (segment.index, segment))
             .collect(),
+        |index| orig_active_elements.get(&index).map(|segment| segment.ty),
         module.orig_element_segment_count,
     )?;
-    // Empty element segments are active segments of no entries at offset 0
-    // of table 0 when table 0 is a `funcref` table, and passive segments
-    // otherwise. Offset 0 is in bounds for every table size. The active
-    // form uses the 1.0 encoding, so it does not require bulk memory.
+    // Empty element segments at the index of an active segment of the input
+    // are active segments of no entries at offset 0 of that segment's table,
+    // with its element type. Other empty element segments are active
+    // segments of no entries at offset 0 of table 0 when table 0 is a
+    // `funcref` table, and passive segments otherwise. Offset 0 is in bounds
+    // for every table size. An empty `funcref` segment on table 0 uses the
+    // 1.0 encoding, which does not require bulk memory.
     let empty_elements_are_active = module
         .tables
         .values()
         .next()
         .map_or(false, |table| table.ty == Type::FuncRef);
     let mut elem = wasm_encoder::ElementSection::new();
-    for slot in element_slots {
+    for (index, slot) in element_slots.into_iter().enumerate() {
         match slot {
             SegmentSlot::Active((table, ty, offset, funcs)) => {
                 elem.active(
@@ -1233,15 +1252,29 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
                     ElementSegmentKind::Declarative => elem.declared(items),
                 };
             }
-            SegmentSlot::Empty if empty_elements_are_active => {
-                elem.active(
-                    None,
-                    &wasm_encoder::ConstExpr::i32_const(0),
-                    wasm_encoder::Elements::Functions(Cow::Borrowed(&[])),
-                );
-            }
             SegmentSlot::Empty => {
-                elem.passive(wasm_encoder::Elements::Functions(Cow::Borrowed(&[])));
+                let target = match orig_active_elements.get(&index) {
+                    Some(segment) => Some((segment.table, segment.ty)),
+                    None if empty_elements_are_active => Some((Table::from(0), Type::FuncRef)),
+                    None => None,
+                };
+                let no_funcs = wasm_encoder::Elements::Functions(Cow::Borrowed(&[]));
+                let offset = wasm_encoder::ConstExpr::i32_const(0);
+                match target {
+                    Some((table, Type::FuncRef)) if table.index() == 0 => {
+                        elem.active(None, &offset, no_funcs)
+                    }
+                    Some((table, ty)) => {
+                        let items = match ty {
+                            Type::FuncRef => no_funcs,
+                            ty => {
+                                wasm_encoder::Elements::Expressions(ty.into(), Cow::Borrowed(&[]))
+                            }
+                        };
+                        elem.active(Some(table.index() as u32), &offset, items)
+                    }
+                    None => elem.passive(no_funcs),
+                };
             }
         }
     }
@@ -1362,40 +1395,81 @@ enum SegmentSlot<A, P> {
 }
 
 /// Lays out one segment index space and returns its entries in index
+/// order. This is `segment_layout_by_key` with every free index taking
+/// active segments of any key.
+fn segment_layout<A, P>(
+    active: Vec<A>,
+    preserved: Vec<(usize, P)>,
+    min_len: usize,
+) -> Result<Vec<SegmentSlot<A, P>>> {
+    segment_layout_by_key(
+        active.into_iter().map(|segment| ((), segment)).collect(),
+        preserved,
+        |_| None,
+        min_len,
+    )
+}
+
+/// Lays out one segment index space and returns its entries in index
 /// order.
 ///
 /// Each segment in `preserved` is placed at the index paired with it.
 /// Function bodies that are emitted without being expanded refer to
 /// passive and declarative segments by their original index in
 /// `memory.init`, `data.drop`, `table.init` and `elem.drop`, so these
-/// indices must not change. The segments in `active` fill the remaining
-/// indices in order. Instantiation drops each active segment after
-/// applying it, so those instructions behave the same on any active data
-/// segment as on an empty passive or empty active data segment, and the
-/// same holds for element segments of the same element type. This makes
-/// it safe to move active segments between the free indices and to fill
-/// free indices with either kind of empty segment. `SegmentSlot::Empty`
-/// entries fill the free indices that remain below `min_len` and below
-/// the highest preserved index after the active segments are used up, so
-/// that every index the original module had stays valid. Active segments
-/// that do not fit below these bounds follow them.
-///
-/// Note: empty element segments are `funcref` segments. A
-/// `table.init` into a typed function reference table that names an
-/// index now holding an empty segment or an active segment of another
-/// element type fails validation.
+/// indices must not change. Each segment in `active` is paired with a
+/// key, and `free_key` returns the key of each remaining index. An index
+/// with key `Some(key)` takes the first remaining active segment paired
+/// with `key`, and an index with key `None` takes the first remaining
+/// active segment. Active segments with the same key keep their order.
+/// Instantiation drops each active segment after applying it, so those
+/// instructions behave the same on any active data segment as on an
+/// empty passive or empty active data segment, and the same holds for
+/// element segments of the same element type. This makes it safe to move
+/// active segments between the free indices of one key and to fill free
+/// indices with empty segments, provided that element segments are keyed
+/// by their element type and that an empty element segment has the
+/// element type of its index's key.
+/// `SegmentSlot::Empty` entries fill the free indices that remain without
+/// an active segment below `min_len` and below the highest preserved
+/// index, so that every index the original module had stays valid.
+/// Active segments that are not placed below these bounds follow them, in
+/// order.
 ///
 /// Fails if two preserved segments have the same index.
-fn segment_layout<A, P>(
-    active: Vec<A>,
+fn segment_layout_by_key<K: Eq + Hash, A, P>(
+    active: Vec<(K, A)>,
     mut preserved: Vec<(usize, P)>,
+    free_key: impl Fn(usize) -> Option<K>,
     min_len: usize,
 ) -> Result<Vec<SegmentSlot<A, P>>> {
     preserved.sort_by_key(|&(index, _)| index);
-    let mut active = active.into_iter();
-    let mut next_free = || match active.next() {
-        Some(segment) => SegmentSlot::Active(segment),
-        None => SegmentSlot::Empty,
+    let mut positions_by_key: FxHashMap<K, VecDeque<usize>> = FxHashMap::default();
+    let mut active = active
+        .into_iter()
+        .enumerate()
+        .map(|(position, (key, segment))| {
+            positions_by_key.entry(key).or_default().push_back(position);
+            Some(segment)
+        })
+        .collect::<Vec<_>>();
+    let mut first_remaining = 0;
+    let mut next_free = |index: usize| {
+        let position = match free_key(index) {
+            Some(key) => positions_by_key.get_mut(&key).and_then(|positions| {
+                std::iter::from_fn(|| positions.pop_front()).find(|&p| active[p].is_some())
+            }),
+            None => {
+                while first_remaining < active.len() && active[first_remaining].is_none() {
+                    first_remaining += 1;
+                }
+                Some(first_remaining)
+            }
+        };
+        match position.and_then(|p| active.get_mut(p)?.take()) {
+            Some(segment) => SegmentSlot::Active(segment),
+            None => SegmentSlot::Empty,
+        }
     };
     let mut slots = vec![];
     for (index, segment) in preserved {
@@ -1403,14 +1477,14 @@ fn segment_layout<A, P>(
             anyhow::bail!("Two segments have the same segment index {}", index);
         }
         while slots.len() < index {
-            slots.push(next_free());
+            slots.push(next_free(slots.len()));
         }
         slots.push(SegmentSlot::Preserved(segment));
     }
     while slots.len() < min_len {
-        slots.push(next_free());
+        slots.push(next_free(slots.len()));
     }
-    slots.extend(active.map(SegmentSlot::Active));
+    slots.extend(active.into_iter().flatten().map(SegmentSlot::Active));
     Ok(slots)
 }
 
