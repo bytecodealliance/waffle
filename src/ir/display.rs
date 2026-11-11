@@ -277,7 +277,10 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
             )?;
         }
         for (table, table_data) in self.module.tables.entries() {
-            writeln!(f, "  {}: {}", table, table_data.ty)?;
+            match table_data.initializer {
+                Some(func) => writeln!(f, "  {}: {} init {}", table, table_data.ty, func)?,
+                None => writeln!(f, "  {}: {}", table, table_data.ty)?,
+            }
             if let Some(funcs) = &table_data.func_elements {
                 for (i, &func) in funcs.iter().enumerate() {
                     writeln!(f, "    {}[{}]: {}", table, i, func)?;

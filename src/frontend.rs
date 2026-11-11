@@ -162,6 +162,39 @@ struct ExtraSections<'a> {
     _phantom: std::marker::PhantomData<&'a ()>,
 }
 
+/// The largest number of entries that the frontend stores in
+/// `TableData::func_elements`.
+const MAX_TABLE: usize = 100_000;
+
+/// Converts a table's initializer to the value of its entries before
+/// element segments are applied: `None` for a table without an
+/// initializer expression, `Some(func)` for `ref.func func`, and
+/// `Some(Func::invalid())` for `ref.null` of any heap type. Returns
+/// `FrontendError::UnsupportedFeature` for any other initializer
+/// expression.
+fn table_initializer(init: &wasmparser::TableInit) -> Result<Option<Func>> {
+    let expr = match init {
+        wasmparser::TableInit::RefNull => return Ok(None),
+        wasmparser::TableInit::Expr(expr) => expr,
+    };
+    let operators = expr
+        .get_operators_reader()
+        .into_iter()
+        .collect::<Result<Vec<wasmparser::Operator>, _>>()?;
+    match &operators[..] {
+        [wasmparser::Operator::RefFunc { function_index }, wasmparser::Operator::End] => {
+            Ok(Some(Func::from(*function_index)))
+        }
+        [wasmparser::Operator::RefNull { .. }, wasmparser::Operator::End] => {
+            Ok(Some(Func::invalid()))
+        }
+        _ => bail!(FrontendError::UnsupportedFeature(format!(
+            "Unsupported table initializer expression: {:?}",
+            operators
+        ))),
+    }
+}
+
 fn handle_payload<'a>(
     module: &mut Module<'a>,
     payload: Payload<'a>,
@@ -214,6 +247,7 @@ fn handle_payload<'a>(
                                 ty: ty.element_type.into(),
                                 initial: ty.initial,
                                 max: ty.maximum,
+                                initializer: None,
                                 func_elements: Some(vec![]),
                             });
                             ImportKind::Table(table)
@@ -279,11 +313,25 @@ fn handle_payload<'a>(
         Payload::TableSection(reader) => {
             for table in reader {
                 let table = table?;
+                let initializer = table_initializer(&table.init)?;
+                let func_elements = match initializer {
+                    Some(func) if func.is_valid() => {
+                        if table.ty.initial > MAX_TABLE as u64 {
+                            bail!(FrontendError::TooLarge(format!(
+                                "Too many table elements: {:?}",
+                                table.ty.initial
+                            )));
+                        }
+                        vec![func; table.ty.initial as usize]
+                    }
+                    _ => vec![],
+                };
                 module.tables.push(TableData {
                     ty: table.ty.element_type.into(),
                     initial: table.ty.initial,
                     max: table.ty.maximum,
-                    func_elements: Some(vec![]),
+                    initializer,
+                    func_elements: Some(func_elements),
                 });
             }
         }
@@ -495,7 +543,6 @@ fn handle_payload<'a>(
                             ))
                         })?;
                         if new_size > table_items.len() {
-                            static MAX_TABLE: usize = 100_000;
                             if new_size > MAX_TABLE {
                                 bail!(FrontendError::TooLarge(format!(
                                     "Too many table elements: {:?}",

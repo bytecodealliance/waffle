@@ -133,6 +133,11 @@ pub struct TableData {
     pub initial: u64,
     /// The maximum size (in elements), if any, of this table.
     pub max: Option<u64>,
+    /// The value of the table's initializer expression, if it has one:
+    /// `Some(func)` for `ref.func func` and `Some(Func::invalid())` for
+    /// `ref.null`. When this is a function, `func_elements` holds an
+    /// entry for every index below `initial`.
+    pub initializer: Option<Func>,
     /// If this is a table of function references, the initial
     /// contents of the table. `null` funcrefs are represented by
     /// `Func::invalid()`.

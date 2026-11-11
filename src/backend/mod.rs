@@ -3,8 +3,8 @@
 use crate::cfg::CFGInfo;
 use crate::entity::EntityRef;
 use crate::ir::{
-    ElementSegmentKind, ExportKind, Func, FuncDecl, FunctionBody, ImportKind, Module, Table, Type,
-    Value, ValueDef,
+    ElementSegmentKind, ExportKind, Func, FuncDecl, FunctionBody, ImportKind, Module, Table,
+    TableData, Type, Value, ValueDef,
 };
 use crate::Operator;
 use anyhow::Result;
@@ -1100,13 +1100,17 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
 
     let mut tables = wasm_encoder::TableSection::new();
     for table_data in module.tables.values().skip(num_table_imports) {
-        tables.table(wasm_encoder::TableType {
+        let table_type = wasm_encoder::TableType {
             element_type: wasm_encoder::RefType::from(table_data.ty),
             minimum: table_data.initial,
             maximum: table_data.max,
             table64: false,
             shared: false,
-        });
+        };
+        match table_data.initializer {
+            Some(func) => tables.table_with_init(table_type, &func_ref_const(table_data.ty, func)),
+            None => tables.table(table_type),
+        };
     }
     into_mod.section(&tables);
 
@@ -1177,19 +1181,21 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
         into_mod.section(&start);
     }
 
-    let (overwritten, null_entries) = overwritten_element_segments(module);
+    let (overwritten, restores) = overwritten_element_segments(module);
     let mut active_elements = vec![];
     for (table, offset, funcs) in &overwritten {
         active_elements.push((*table, module.tables[*table].ty, *offset, &funcs[..]));
     }
     for (table, table_data) in module.tables.entries() {
         if let Some(elts) = &table_data.func_elements {
-            for (offset, run) in non_null_runs(elts) {
+            // An entry is emitted only if it differs from its value
+            // before element segments are applied.
+            for (offset, run) in changed_runs(elts, |index| initial_entry(table_data, index)) {
                 active_elements.push((table, table_data.ty, offset, run));
             }
         }
     }
-    for (table, offset, funcs) in &null_entries {
+    for (table, offset, funcs) in &restores {
         active_elements.push((*table, module.tables[*table].ty, *offset, &funcs[..]));
     }
     let element_slots = segment_layout(
@@ -1441,19 +1447,19 @@ fn element_items(ty: Type, funcs: &[Func]) -> Result<wasm_encoder::Elements<'sta
     ))
 }
 
-/// Splits `elts` into runs of consecutive valid entries. Each run is
-/// returned with the index of its first entry. `Func::invalid()` entries
-/// are not part of any run.
-fn non_null_runs(elts: &[Func]) -> Vec<(usize, &[Func])> {
+/// Splits `elts` into runs of consecutive entries that differ from
+/// `before` of their index. Each run is returned with the index of its
+/// first entry.
+fn changed_runs(elts: &[Func], before: impl Fn(usize) -> Func) -> Vec<(usize, &[Func])> {
     let mut runs = vec![];
     let mut i = 0;
     while i < elts.len() {
-        if !elts[i].is_valid() {
+        if elts[i] == before(i) {
             i += 1;
             continue;
         }
         let start = i;
-        while i < elts.len() && elts[i].is_valid() {
+        while i < elts.len() && elts[i] != before(i) {
             i += 1;
         }
         runs.push((start, &elts[start..i]));
@@ -1461,20 +1467,31 @@ fn non_null_runs(elts: &[Func]) -> Vec<(usize, &[Func])> {
     runs
 }
 
+/// Returns the value of entry `index` of a table before element segments
+/// are applied: the initializer's value below `initial`, and null
+/// otherwise.
+fn initial_entry(table_data: &TableData, index: usize) -> Func {
+    match table_data.initializer {
+        Some(func) if (index as u64) < table_data.initial => func,
+        _ => Func::invalid(),
+    }
+}
+
 /// Returns the active element segments that write the functions in
-/// `Module::overwritten_elements`, and the segments that restore null
-/// entries, as two lists of `(table, offset, entries)`.
+/// `Module::overwritten_elements`, and the segments that restore the
+/// final contents of those entries, as two lists of
+/// `(table, offset, entries)`.
 ///
 /// The first list writes each overwritten function into its entry,
-/// except for functions that a table's final contents, a passive or
-/// declarative segment, a function export or an earlier entry of the
-/// list contains. Records whose index is not below the length of their
-/// table's `func_elements`, or whose table has no `func_elements`, are
-/// ignored. The second list writes `ref.null` into each entry of
-/// the first list whose final content is null. Entries with consecutive
-/// indices in the same table share a segment. The first list must be
-/// applied before the segments for the tables' final contents, and the
-/// second after the first.
+/// except for functions that a table's initializer or final contents, a
+/// passive or declarative segment, a function export or an earlier entry
+/// of the list contains. Records whose index is not below the length of
+/// their table's `func_elements`, or whose table has no `func_elements`,
+/// are ignored. The second list writes the final content into each entry
+/// of the first list whose final content equals its `initial_entry`.
+/// Entries with consecutive indices in the same table share a segment.
+/// The first list must be applied before the segments for the tables'
+/// final contents, and the second after the first.
 fn overwritten_element_segments(
     module: &Module,
 ) -> (
@@ -1483,6 +1500,7 @@ fn overwritten_element_segments(
 ) {
     let mut declared = FxHashSet::default();
     for table_data in module.tables.values() {
+        declared.extend(table_data.initializer);
         declared.extend(table_data.func_elements.iter().flatten().copied());
     }
     for segment in &module.element_segments {
@@ -1494,9 +1512,10 @@ fn overwritten_element_segments(
         }
     }
     let mut writes = vec![];
-    let mut nulls = vec![];
+    let mut restores = vec![];
     for element in &module.overwritten_elements {
-        let elts = match &module.tables[element.table].func_elements {
+        let table_data = &module.tables[element.table];
+        let elts = match &table_data.func_elements {
             Some(elts) if element.index < elts.len() => elts,
             _ => continue,
         };
@@ -1504,14 +1523,15 @@ fn overwritten_element_segments(
             continue;
         }
         writes.push((element.table, element.index, element.func));
-        if !elts[element.index].is_valid() {
-            nulls.push((element.table, element.index, Func::invalid()));
+        let content = elts[element.index];
+        if content == initial_entry(table_data, element.index) {
+            restores.push((element.table, element.index, content));
         }
     }
     writes.sort_by_key(|&(table, index, _)| (table, index));
-    nulls.sort_by_key(|&(table, index, _)| (table, index));
-    nulls.dedup();
-    (consecutive_runs(writes), consecutive_runs(nulls))
+    restores.sort_by_key(|&(table, index, _)| (table, index));
+    restores.dedup();
+    (consecutive_runs(writes), consecutive_runs(restores))
 }
 
 /// Groups `(table, index, func)` entries, sorted by table and index, into
@@ -1530,6 +1550,16 @@ fn consecutive_runs(entries: Vec<(Table, usize, Func)>) -> Vec<(Table, usize, Ve
         }
     }
     runs
+}
+
+/// Returns `ref.func func`, or `ref.null` of the heap type of `ty` when
+/// `func` is `Func::invalid()`.
+fn func_ref_const(ty: Type, func: Func) -> wasm_encoder::ConstExpr {
+    if func.is_valid() {
+        wasm_encoder::ConstExpr::ref_func(u32::try_from(func.index()).unwrap())
+    } else {
+        wasm_encoder::ConstExpr::ref_null(wasm_encoder::RefType::from(ty).heap_type)
+    }
 }
 
 fn const_init(ty: Type, value: Option<u64>) -> wasm_encoder::ConstExpr {
