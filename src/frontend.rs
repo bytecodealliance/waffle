@@ -2035,7 +2035,12 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
         let args = &mut self.body.arg_pool[input_operands];
         for (i, &input) in inputs.into_iter().enumerate().rev() {
             let (stack_top_ty, stack_top) = self.op_stack.pop().unwrap();
-            assert_eq!(stack_top_ty, input);
+            assert!(
+                stack_top_ty.is_subtype_of(input),
+                "operand type {} is not a subtype of {}",
+                stack_top_ty,
+                input
+            );
             args[i] = stack_top;
         }
         log::trace!(" -> operands: {:?}", input_operands);
