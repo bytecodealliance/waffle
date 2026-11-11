@@ -219,7 +219,7 @@ pub fn op_inputs(
             Ok(vec![Type::I32, module.tables[*table_index].ty].into())
         }
         Operator::TableGrow { table_index } => {
-            Ok(vec![Type::I32, module.tables[*table_index].ty].into())
+            Ok(vec![module.tables[*table_index].ty, Type::I32].into())
         }
         Operator::TableSize { .. } => Ok(Cow::Borrowed(&[])),
         Operator::MemorySize { .. } => Ok(Cow::Borrowed(&[])),
@@ -691,7 +691,7 @@ pub fn op_outputs(
         Operator::I64ReinterpretF64 => Ok(Cow::Borrowed(&[Type::I64])),
         Operator::TableGet { table_index } => Ok(vec![module.tables[*table_index].ty].into()),
         Operator::TableSet { .. } => Ok(Cow::Borrowed(&[])),
-        Operator::TableGrow { .. } => Ok(Cow::Borrowed(&[])),
+        Operator::TableGrow { .. } => Ok(Cow::Borrowed(&[Type::I32])),
         Operator::TableSize { .. } => Ok(Cow::Borrowed(&[Type::I32])),
         Operator::MemorySize { .. } => Ok(Cow::Borrowed(&[Type::I32])),
         Operator::MemoryGrow { .. } => Ok(Cow::Borrowed(&[Type::I32])),
