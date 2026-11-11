@@ -25,6 +25,8 @@ use localify::Localifier;
 pub struct WasmFuncBackend<'a> {
     body: Cow<'a, FunctionBody>,
     cfg: CFGInfo,
+    /// Declare locals of a typed function reference type as `funcref`.
+    erase_typed_func_refs: bool,
 }
 
 struct CompileContext<'a> {
@@ -41,6 +43,69 @@ macro_rules! op {
 
 impl<'a> WasmFuncBackend<'a> {
     pub fn compile(body: &'a FunctionBody) -> Result<wasm_encoder::Function> {
+        Self::compile_with_erasure(body, |_| Ok(false))
+    }
+
+    /// Compiles `body`, a function of `module`. Locals of a typed
+    /// function reference type are declared as `funcref` unless
+    /// `needs_typed_func_refs` returns `true` for the body.
+    pub fn compile_in_module(
+        body: &'a FunctionBody,
+        module: &Module<'_>,
+    ) -> Result<wasm_encoder::Function> {
+        Self::compile_with_erasure(body, |body| {
+            Self::needs_typed_func_refs(module, body).map(|needs| !needs)
+        })
+    }
+
+    /// Returns `true` if the locals of `body` must keep their typed
+    /// function reference types: a parameter or result of the function
+    /// has a typed function reference type, or an operator requires a
+    /// typed function reference operand. Operator inputs are computed
+    /// with every typed function reference argument replaced by
+    /// `funcref`, so operators whose input types are the types of their
+    /// arguments do not count. Arguments to block parameters do not count
+    /// because the locals of typed block parameters are declared as
+    /// `funcref` as well.
+    fn needs_typed_func_refs(module: &Module<'_>, body: &FunctionBody) -> Result<bool> {
+        let is_typed = |ty: &Type| matches!(ty, Type::TypedFuncRef(..));
+        if body.blocks[body.entry]
+            .params
+            .iter()
+            .any(|(ty, _)| is_typed(ty))
+            || body.rets.iter().any(is_typed)
+        {
+            return Ok(true);
+        }
+        for block in body.blocks.values() {
+            for &inst in &block.insts {
+                if let ValueDef::Operator(op, args, _) = &body.values[inst] {
+                    let op_stack = body.arg_pool[*args]
+                        .iter()
+                        .map(|&arg| {
+                            let ty = body.values[body.resolve_alias(arg)]
+                                .ty(&body.type_pool)
+                                .unwrap();
+                            let ty = if is_typed(&ty) { Type::FuncRef } else { ty };
+                            (ty, arg)
+                        })
+                        .collect::<Vec<_>>();
+                    if crate::op_traits::op_inputs(module, &op_stack, op)?
+                        .iter()
+                        .any(is_typed)
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn compile_with_erasure(
+        body: &'a FunctionBody,
+        erase_typed_func_refs: impl FnOnce(&FunctionBody) -> Result<bool>,
+    ) -> Result<wasm_encoder::Function> {
         body.validate()?;
         log::debug!("Backend compiling:\n{}\n", body.display_verbose("| ", None));
         // For ownership reasons (to avoid a self-referential struct
@@ -50,7 +115,12 @@ impl<'a> WasmFuncBackend<'a> {
         // state and run the rest of the compilation in `lower()`.
         let body = Reducifier::new(body).run();
         let cfg = CFGInfo::new(&body);
-        let state = WasmFuncBackend { body, cfg };
+        let erase_typed_func_refs = erase_typed_func_refs(&body)?;
+        let state = WasmFuncBackend {
+            body,
+            cfg,
+            erase_typed_func_refs,
+        };
         state.lower()
     }
 
@@ -74,7 +144,11 @@ impl<'a> WasmFuncBackend<'a> {
                 .locals
                 .values()
                 .skip(self.body.blocks[self.body.entry].params.len())
-                .map(|&ty| (1, wasm_encoder::ValType::from(ty)))
+                .map(|&ty| match ty {
+                    Type::TypedFuncRef(..) if self.erase_typed_func_refs => Type::FuncRef,
+                    ty => ty,
+                })
+                .map(|ty| (1, wasm_encoder::ValType::from(ty)))
                 .collect::<Vec<_>>(),
         );
 
@@ -1236,7 +1310,8 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
                 FuncDecl::Compiled(_, _name, bytes) => Ok(Cow::Borrowed(&bytes[..])),
                 FuncDecl::Body(_, name, body) => {
                     log::debug!("Compiling {} \"{}\"", func, name);
-                    WasmFuncBackend::compile(body).map(|func| Cow::Owned(func.into_raw_body()))
+                    WasmFuncBackend::compile_in_module(body, module)
+                        .map(|func| Cow::Owned(func.into_raw_body()))
                 }
                 FuncDecl::Import(_, _) => unreachable!("Should have skipped imports"),
                 FuncDecl::None => panic!("FuncDecl::None at compilation time"),

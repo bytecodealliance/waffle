@@ -625,7 +625,10 @@ impl FunctionBody {
     /// Compile this function to Wasm bytecode. See
     /// `Module::to_wasm_bytes()` for the Wasm-level compilation entry
     /// point. This is mostly useful for custom per-function
-    /// compilation flows, e.g. per-function caching.
+    /// compilation flows, e.g. per-function caching. Locals keep the
+    /// types of the values they hold, so a local that holds the result of
+    /// `ref.func` is declared with a typed function reference type, which
+    /// requires the function references proposal.
     pub fn compile(&self) -> Result<wasm_encoder::Function> {
         WasmFuncBackend::compile(self)
     }
