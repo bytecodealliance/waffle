@@ -15,7 +15,7 @@
 //! control flow (these become `Terminator` instructions).
 
 use crate::{entity::EntityRef, Func, Global, Memory, Signature, Table, Type};
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 pub use wasmparser::{Ieee32, Ieee64};
 
 /// An argument to a memory load or store, specifying which memory,
@@ -695,9 +695,9 @@ impl<'a, 'b> std::convert::TryFrom<&'b wasmparser::Operator<'a>> for Operator {
             &wasmparser::Operator::LocalTee { .. } => Err(()),
             &wasmparser::Operator::LocalGet { .. } => Err(()),
             &wasmparser::Operator::Select => Ok(Operator::Select),
-            &wasmparser::Operator::TypedSelect { ty } => {
-                Ok(Operator::TypedSelect { ty: ty.into() })
-            }
+            &wasmparser::Operator::TypedSelect { ty } => Ok(Operator::TypedSelect {
+                ty: ty.try_into().map_err(|_| ())?,
+            }),
             &wasmparser::Operator::GlobalGet { global_index } => Ok(Operator::GlobalGet {
                 global_index: Global::from(global_index),
             }),
