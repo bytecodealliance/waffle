@@ -15,5 +15,6 @@ fuzz_target!(|module: waffle::fuzzing::SupportedModule| {
         return;
     }
     parsed_module.per_func_body(|body| body.optimize(&OptOptions::default()));
-    let _ = parsed_module.to_wasm_bytes();
+    let bytes = parsed_module.to_wasm_bytes().unwrap();
+    waffle::fuzzing::validate_output(&module, &bytes[..]);
 });

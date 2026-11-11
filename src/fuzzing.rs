@@ -136,3 +136,13 @@ impl<'a> arbitrary::Arbitrary<'a> for SupportedModule {
         Ok(Self(wasm_smith::Module::new(config, u)?))
     }
 }
+
+/// Validates `bytes` with `wasmparser::Validator` under the features of
+/// the configuration `module` was generated with. Panics with the
+/// validator's message if validation fails.
+pub fn validate_output(module: &wasm_smith::Module, bytes: &[u8]) {
+    let mut validator = wasmparser::Validator::new_with_features(module.config().features());
+    if let Err(e) = validator.validate_all(bytes) {
+        panic!("Invalid output: {}", e);
+    }
+}

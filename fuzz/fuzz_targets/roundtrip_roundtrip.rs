@@ -15,7 +15,9 @@ fuzz_target!(|module: waffle::fuzzing::SupportedModule| {
     if let Ok(filename) = std::env::var("ROUNDTRIP_WASM_SAVE") {
         std::fs::write(filename, &roundtrip_bytes[..]).unwrap();
     }
+    waffle::fuzzing::validate_output(&module, &roundtrip_bytes[..]);
     let parsed_roundtrip_module =
         Module::from_wasm_bytes(&roundtrip_bytes[..], &FrontendOptions::default()).unwrap();
-    let _ = parsed_roundtrip_module.to_wasm_bytes();
+    let roundtrip_roundtrip_bytes = parsed_roundtrip_module.to_wasm_bytes().unwrap();
+    waffle::fuzzing::validate_output(&module, &roundtrip_roundtrip_bytes[..]);
 });
