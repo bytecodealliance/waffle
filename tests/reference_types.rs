@@ -2,7 +2,7 @@
 //! the frontend rejects.
 
 use waffle::wasmparser::Validator;
-use waffle::{FrontendError, FrontendOptions, Module};
+use waffle::{FrontendError, FrontendOptions, GlobalData, Module, Type};
 
 #[test]
 fn externref_is_preserved() {
@@ -11,6 +11,20 @@ fn externref_is_preserved() {
     Validator::new()
         .validate_all(&module.to_wasm_bytes().unwrap())
         .unwrap();
+}
+
+#[test]
+fn nullable_reference_globals_without_a_value_are_null() {
+    let mut module = Module::empty();
+    for ty in [Type::FuncRef, Type::ExternRef] {
+        module.globals.push(GlobalData {
+            ty,
+            value: None,
+            mutable: false,
+        });
+    }
+    let bytes = module.to_wasm_bytes().unwrap();
+    Validator::new().validate_all(&bytes).unwrap();
 }
 
 /// Parses `wat` and expands every function body, and asserts that one of

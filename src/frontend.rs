@@ -773,7 +773,10 @@ impl LocalTracker {
             Type::F32 => body.add_op(at_block, Operator::F32Const { value: 0 }, &[], &[ty]),
             Type::F64 => body.add_op(at_block, Operator::F64Const { value: 0 }, &[], &[ty]),
             Type::V128 => body.add_op(at_block, Operator::V128Const { value: 0 }, &[], &[ty]),
-            _ => todo!("unsupported type: {:?}", ty),
+            Type::FuncRef | Type::ExternRef | Type::TypedFuncRef(true, _) => {
+                body.add_op(at_block, Operator::RefNull { ty }, &[], &[ty])
+            }
+            Type::TypedFuncRef(false, _) => todo!("unsupported type: {:?}", ty),
         };
         log::trace!(
             "created default value {} of type {} at block {}",

@@ -1282,9 +1282,8 @@ fn const_init(ty: Type, value: Option<u64>) -> wasm_encoder::ConstExpr {
         Type::I64 => wasm_encoder::ConstExpr::i64_const(bits as i64),
         Type::F32 => wasm_encoder::ConstExpr::f32_const(f32::from_bits(bits as u32).into()),
         Type::F64 => wasm_encoder::ConstExpr::f64_const(f64::from_bits(bits as u64).into()),
-        Type::TypedFuncRef(true, sig) if bits == 0 => {
-            let hty = wasm_encoder::HeapType::Concrete(sig);
-            wasm_encoder::ConstExpr::ref_null(hty)
+        Type::FuncRef | Type::ExternRef | Type::TypedFuncRef(true, _) if bits == 0 => {
+            wasm_encoder::ConstExpr::ref_null(wasm_encoder::RefType::from(ty).heap_type)
         }
         _ => unimplemented!(),
     }
