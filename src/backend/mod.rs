@@ -2,13 +2,19 @@
 
 use crate::cfg::CFGInfo;
 use crate::entity::EntityRef;
-use crate::ir::{ExportKind, FuncDecl, FunctionBody, ImportKind, Module, Type, Value, ValueDef};
+use crate::ir::{
+    ElementSegmentKind, ExportKind, Func, FuncDecl, FunctionBody, ImportKind, Module, Table,
+    TableData, Type, Value, ValueDef,
+};
 use crate::Operator;
 use anyhow::Result;
+use fxhash::{FxHashMap, FxHashSet};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::convert::TryFrom;
+use std::hash::Hash;
 
 pub(crate) mod bitset;
 pub(crate) mod cross_block_ids;
@@ -1096,13 +1102,17 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
 
     let mut tables = wasm_encoder::TableSection::new();
     for table_data in module.tables.values().skip(num_table_imports) {
-        tables.table(wasm_encoder::TableType {
+        let table_type = wasm_encoder::TableType {
             element_type: wasm_encoder::RefType::from(table_data.ty),
             minimum: table_data.initial,
             maximum: table_data.max,
             table64: false,
             shared: false,
-        });
+        };
+        match table_data.initializer {
+            Some(func) => tables.table_with_init(table_type, &func_ref_const(table_data.ty, func)),
+            None => tables.table(table_type),
+        };
     }
     into_mod.section(&tables);
 
@@ -1173,42 +1183,149 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
         into_mod.section(&start);
     }
 
-    let mut elem = wasm_encoder::ElementSection::new();
+    let (overwritten, restores) = overwritten_element_segments(module);
+    let mut active_elements = vec![];
+    for (table, offset, funcs) in &overwritten {
+        active_elements.push((*table, module.tables[*table].ty, *offset, &funcs[..]));
+    }
     for (table, table_data) in module.tables.entries() {
         if let Some(elts) = &table_data.func_elements {
-            for (i, &elt) in elts.iter().enumerate() {
-                if elt.is_valid() {
-                    match table_data.ty {
-                        Type::FuncRef => {
-                            elem.active(
-                                Some(table.index() as u32),
-                                &wasm_encoder::ConstExpr::i32_const(i as i32),
-                                wasm_encoder::Elements::Functions(std::borrow::Cow::Borrowed(&[
-                                    u32::try_from(elt.index()).unwrap(),
-                                ])),
-                            );
-                        }
-                        Type::TypedFuncRef(..) => {
-                            elem.active(
-                                Some(table.index() as u32),
-                                &wasm_encoder::ConstExpr::i32_const(i as i32),
-                                wasm_encoder::Elements::Expressions(
-                                    table_data.ty.into(),
-                                    std::borrow::Cow::Borrowed(&[
-                                        wasm_encoder::ConstExpr::ref_func(
-                                            u32::try_from(elt.index()).unwrap(),
-                                        ),
-                                    ]),
-                                ),
-                            );
-                        }
-                        _ => unreachable!(),
+            // An entry is emitted only if it differs from its value
+            // before element segments are applied.
+            for (offset, run) in changed_runs(elts, |index| initial_entry(table_data, index)) {
+                active_elements.push((table, table_data.ty, offset, run));
+            }
+        }
+    }
+    for (table, offset, funcs) in &restores {
+        active_elements.push((*table, module.tables[*table].ty, *offset, &funcs[..]));
+    }
+    // Each active segment is keyed by its element type, which is the
+    // element type of its table. An index that held an active segment in
+    // the input takes only segments of that segment's element type, so
+    // `table.init` in unexpanded bodies stays valid. The segments of one
+    // table share a key, so they keep their order.
+    let orig_active_elements = module
+        .active_element_segments
+        .iter()
+        .map(|segment| (segment.index, segment))
+        .collect::<FxHashMap<_, _>>();
+    let element_slots = segment_layout_by_key(
+        active_elements
+            .into_iter()
+            .map(|(table, ty, offset, funcs)| (ty, (table, ty, offset, funcs)))
+            .collect(),
+        module
+            .element_segments
+            .iter()
+            .map(|segment| (segment.index, segment))
+            .collect(),
+        |index| orig_active_elements.get(&index).map(|segment| segment.ty),
+        module.orig_element_segment_count,
+    )?;
+    // Empty element segments at the index of an active segment of the input
+    // are active segments of no entries at offset 0 of that segment's table,
+    // with its element type. Other empty element segments are active
+    // segments of no entries at offset 0 of table 0 when table 0 is a
+    // `funcref` table, and passive segments otherwise. Offset 0 is in bounds
+    // for every table size. An empty `funcref` segment on table 0 uses the
+    // 1.0 encoding, which does not require bulk memory.
+    let empty_elements_are_active = module
+        .tables
+        .values()
+        .next()
+        .map_or(false, |table| table.ty == Type::FuncRef);
+    let mut elem = wasm_encoder::ElementSection::new();
+    for (index, slot) in element_slots.into_iter().enumerate() {
+        match slot {
+            SegmentSlot::Active((table, ty, offset, funcs)) => {
+                elem.active(
+                    Some(table.index() as u32),
+                    &wasm_encoder::ConstExpr::i32_const(offset as i32),
+                    element_items(ty, funcs)?,
+                );
+            }
+            SegmentSlot::Preserved(segment) => {
+                let items = element_items(segment.ty, &segment.elements)?;
+                match segment.kind {
+                    ElementSegmentKind::Passive => elem.passive(items),
+                    ElementSegmentKind::Declarative => elem.declared(items),
+                };
+            }
+            SegmentSlot::Empty => {
+                let target = match orig_active_elements.get(&index) {
+                    Some(segment) => Some((segment.table, segment.ty)),
+                    None if empty_elements_are_active => Some((Table::from(0), Type::FuncRef)),
+                    None => None,
+                };
+                let no_funcs = wasm_encoder::Elements::Functions(Cow::Borrowed(&[]));
+                let offset = wasm_encoder::ConstExpr::i32_const(0);
+                match target {
+                    Some((table, Type::FuncRef)) if table.index() == 0 => {
+                        elem.active(None, &offset, no_funcs)
                     }
-                }
+                    Some((table, ty)) => {
+                        let items = match ty {
+                            Type::FuncRef => no_funcs,
+                            ty => {
+                                wasm_encoder::Elements::Expressions(ty.into(), Cow::Borrowed(&[]))
+                            }
+                        };
+                        elem.active(Some(table.index() as u32), &offset, items)
+                    }
+                    None => elem.passive(no_funcs),
+                };
             }
         }
     }
     into_mod.section(&elem);
+
+    let mut active_data = vec![];
+    for (mem, mem_data) in module.memories.entries() {
+        for segment in &mem_data.segments {
+            active_data.push((mem, segment));
+        }
+    }
+    // Validation requires a DataCount section for every instruction that
+    // names a data segment, so code in a module without one names no data
+    // segment. We pad to the original data segment count only when the
+    // module had a DataCount section, so that modules without one get no
+    // empty passive segments.
+    let min_data_segments = if module.has_data_count {
+        module.orig_data_segment_count
+    } else {
+        0
+    };
+    let data_slots = segment_layout(
+        active_data,
+        module
+            .passive_data_segments
+            .iter()
+            .map(|segment| (segment.index, segment))
+            .collect(),
+        min_data_segments,
+    )?;
+    let mut data = wasm_encoder::DataSection::new();
+    for slot in data_slots {
+        match slot {
+            SegmentSlot::Active((mem, segment)) => {
+                data.active(
+                    mem.index() as u32,
+                    &wasm_encoder::ConstExpr::i32_const(segment.offset as i32),
+                    segment.data.iter().copied(),
+                );
+            }
+            SegmentSlot::Preserved(segment) => {
+                data.passive(segment.data.iter().copied());
+            }
+            SegmentSlot::Empty => {
+                data.passive(std::iter::empty());
+            }
+        }
+    }
+    if module.has_data_count || !module.passive_data_segments.is_empty() {
+        into_mod.section(&wasm_encoder::DataCountSection { count: data.len() });
+    }
 
     let mut code = wasm_encoder::CodeSection::new();
 
@@ -1244,16 +1361,6 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
     }
     into_mod.section(&code);
 
-    let mut data = wasm_encoder::DataSection::new();
-    for (mem, mem_data) in module.memories.entries() {
-        for segment in &mem_data.segments {
-            data.active(
-                mem.index() as u32,
-                &wasm_encoder::ConstExpr::i32_const(segment.offset as i32),
-                segment.data.iter().copied(),
-            );
-        }
-    }
     into_mod.section(&data);
 
     let mut names = wasm_encoder::NameSection::new();
@@ -1275,6 +1382,260 @@ pub fn compile(module: &Module<'_>) -> anyhow::Result<Vec<u8>> {
     Ok(into_mod.finish())
 }
 
+/// An entry in a data or element segment index space, as returned by
+/// `segment_layout`.
+#[derive(Debug, PartialEq, Eq)]
+enum SegmentSlot<A, P> {
+    /// An active segment.
+    Active(A),
+    /// A passive or declarative segment, at its recorded index.
+    Preserved(P),
+    /// An empty segment.
+    Empty,
+}
+
+/// Lays out one segment index space and returns its entries in index
+/// order. This is `segment_layout_by_key` with every free index taking
+/// active segments of any key.
+fn segment_layout<A, P>(
+    active: Vec<A>,
+    preserved: Vec<(usize, P)>,
+    min_len: usize,
+) -> Result<Vec<SegmentSlot<A, P>>> {
+    segment_layout_by_key(
+        active.into_iter().map(|segment| ((), segment)).collect(),
+        preserved,
+        |_| None,
+        min_len,
+    )
+}
+
+/// Lays out one segment index space and returns its entries in index
+/// order.
+///
+/// Each segment in `preserved` is placed at the index paired with it.
+/// Function bodies that are emitted without being expanded refer to
+/// passive and declarative segments by their original index in
+/// `memory.init`, `data.drop`, `table.init` and `elem.drop`, so these
+/// indices must not change. Each segment in `active` is paired with a
+/// key, and `free_key` returns the key of each remaining index. An index
+/// with key `Some(key)` takes the first remaining active segment paired
+/// with `key`, and an index with key `None` takes the first remaining
+/// active segment. Active segments with the same key keep their order.
+/// Instantiation drops each active segment after applying it, so those
+/// instructions behave the same on any active data segment as on an
+/// empty passive or empty active data segment, and the same holds for
+/// element segments of the same element type. This makes it safe to move
+/// active segments between the free indices of one key and to fill free
+/// indices with empty segments, provided that element segments are keyed
+/// by their element type and that an empty element segment has the
+/// element type of its index's key.
+/// `SegmentSlot::Empty` entries fill the free indices that remain without
+/// an active segment below `min_len` and below the highest preserved
+/// index, so that every index the original module had stays valid.
+/// Active segments that are not placed below these bounds follow them, in
+/// order.
+///
+/// Fails if two preserved segments have the same index.
+fn segment_layout_by_key<K: Eq + Hash, A, P>(
+    active: Vec<(K, A)>,
+    mut preserved: Vec<(usize, P)>,
+    free_key: impl Fn(usize) -> Option<K>,
+    min_len: usize,
+) -> Result<Vec<SegmentSlot<A, P>>> {
+    preserved.sort_by_key(|&(index, _)| index);
+    let mut positions_by_key: FxHashMap<K, VecDeque<usize>> = FxHashMap::default();
+    let mut active = active
+        .into_iter()
+        .enumerate()
+        .map(|(position, (key, segment))| {
+            positions_by_key.entry(key).or_default().push_back(position);
+            Some(segment)
+        })
+        .collect::<Vec<_>>();
+    let mut first_remaining = 0;
+    let mut next_free = |index: usize| {
+        let position = match free_key(index) {
+            Some(key) => positions_by_key.get_mut(&key).and_then(|positions| {
+                std::iter::from_fn(|| positions.pop_front()).find(|&p| active[p].is_some())
+            }),
+            None => {
+                while first_remaining < active.len() && active[first_remaining].is_none() {
+                    first_remaining += 1;
+                }
+                Some(first_remaining)
+            }
+        };
+        match position.and_then(|p| active.get_mut(p)?.take()) {
+            Some(segment) => SegmentSlot::Active(segment),
+            None => SegmentSlot::Empty,
+        }
+    };
+    let mut slots = vec![];
+    for (index, segment) in preserved {
+        if index < slots.len() {
+            anyhow::bail!("Two segments have the same segment index {}", index);
+        }
+        while slots.len() < index {
+            slots.push(next_free(slots.len()));
+        }
+        slots.push(SegmentSlot::Preserved(segment));
+    }
+    while slots.len() < min_len {
+        slots.push(next_free(slots.len()));
+    }
+    slots.extend(active.into_iter().flatten().map(SegmentSlot::Active));
+    Ok(slots)
+}
+
+/// Encodes `funcs` as the items of an element segment with element type
+/// `ty`. `Func::invalid()` entries are encoded as `ref.null`.
+fn element_items(ty: Type, funcs: &[Func]) -> Result<wasm_encoder::Elements<'static>> {
+    let null = match ty {
+        Type::FuncRef if funcs.iter().all(|func| func.is_valid()) => {
+            return Ok(wasm_encoder::Elements::Functions(Cow::Owned(
+                funcs
+                    .iter()
+                    .map(|func| u32::try_from(func.index()).unwrap())
+                    .collect(),
+            )));
+        }
+        Type::FuncRef => wasm_encoder::HeapType::FUNC,
+        Type::TypedFuncRef(_, sig) => wasm_encoder::HeapType::Concrete(sig),
+        _ => anyhow::bail!("Element segment has non-reference element type {}", ty),
+    };
+    Ok(wasm_encoder::Elements::Expressions(
+        ty.into(),
+        Cow::Owned(
+            funcs
+                .iter()
+                .map(|func| {
+                    if func.is_valid() {
+                        wasm_encoder::ConstExpr::ref_func(u32::try_from(func.index()).unwrap())
+                    } else {
+                        wasm_encoder::ConstExpr::ref_null(null)
+                    }
+                })
+                .collect(),
+        ),
+    ))
+}
+
+/// Splits `elts` into runs of consecutive entries that differ from
+/// `before` of their index. Each run is returned with the index of its
+/// first entry.
+fn changed_runs(elts: &[Func], before: impl Fn(usize) -> Func) -> Vec<(usize, &[Func])> {
+    let mut runs = vec![];
+    let mut i = 0;
+    while i < elts.len() {
+        if elts[i] == before(i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < elts.len() && elts[i] != before(i) {
+            i += 1;
+        }
+        runs.push((start, &elts[start..i]));
+    }
+    runs
+}
+
+/// Returns the value of entry `index` of a table before element segments
+/// are applied: the initializer's value below `initial`, and null
+/// otherwise.
+fn initial_entry(table_data: &TableData, index: usize) -> Func {
+    match table_data.initializer {
+        Some(func) if (index as u64) < table_data.initial => func,
+        _ => Func::invalid(),
+    }
+}
+
+/// Returns the active element segments that write the functions in
+/// `Module::overwritten_elements`, and the segments that restore the
+/// final contents of those entries, as two lists of
+/// `(table, offset, entries)`.
+///
+/// The first list writes each overwritten function into its entry,
+/// except for functions that a table's initializer or final contents, a
+/// passive or declarative segment, a function export or an earlier entry
+/// of the list contains. Records whose index is not below the length of
+/// their table's `func_elements`, or whose table has no `func_elements`,
+/// are ignored. The second list writes the final content into each entry
+/// of the first list whose final content equals its `initial_entry`.
+/// Entries with consecutive indices in the same table share a segment.
+/// The first list must be applied before the segments for the tables'
+/// final contents, and the second after the first.
+fn overwritten_element_segments(
+    module: &Module,
+) -> (
+    Vec<(Table, usize, Vec<Func>)>,
+    Vec<(Table, usize, Vec<Func>)>,
+) {
+    let mut declared = FxHashSet::default();
+    for table_data in module.tables.values() {
+        declared.extend(table_data.initializer);
+        declared.extend(table_data.func_elements.iter().flatten().copied());
+    }
+    for segment in &module.element_segments {
+        declared.extend(segment.elements.iter().copied());
+    }
+    for export in &module.exports {
+        if let ExportKind::Func(func) = export.kind {
+            declared.insert(func);
+        }
+    }
+    let mut writes = vec![];
+    let mut restores = vec![];
+    for element in &module.overwritten_elements {
+        let table_data = &module.tables[element.table];
+        let elts = match &table_data.func_elements {
+            Some(elts) if element.index < elts.len() => elts,
+            _ => continue,
+        };
+        if !element.func.is_valid() || !declared.insert(element.func) {
+            continue;
+        }
+        writes.push((element.table, element.index, element.func));
+        let content = elts[element.index];
+        if content == initial_entry(table_data, element.index) {
+            restores.push((element.table, element.index, content));
+        }
+    }
+    writes.sort_by_key(|&(table, index, _)| (table, index));
+    restores.sort_by_key(|&(table, index, _)| (table, index));
+    restores.dedup();
+    (consecutive_runs(writes), consecutive_runs(restores))
+}
+
+/// Groups `(table, index, func)` entries, sorted by table and index, into
+/// runs of consecutive indices in the same table. Each run is returned
+/// with its table and the index of its first entry.
+fn consecutive_runs(entries: Vec<(Table, usize, Func)>) -> Vec<(Table, usize, Vec<Func>)> {
+    let mut runs: Vec<(Table, usize, Vec<Func>)> = vec![];
+    for (table, index, func) in entries {
+        match runs.last_mut() {
+            Some((run_table, start, funcs))
+                if *run_table == table && *start + funcs.len() == index =>
+            {
+                funcs.push(func)
+            }
+            _ => runs.push((table, index, vec![func])),
+        }
+    }
+    runs
+}
+
+/// Returns `ref.func func`, or `ref.null` of the heap type of `ty` when
+/// `func` is `Func::invalid()`.
+fn func_ref_const(ty: Type, func: Func) -> wasm_encoder::ConstExpr {
+    if func.is_valid() {
+        wasm_encoder::ConstExpr::ref_func(u32::try_from(func.index()).unwrap())
+    } else {
+        wasm_encoder::ConstExpr::ref_null(wasm_encoder::RefType::from(ty).heap_type)
+    }
+}
+
 fn const_init(ty: Type, value: Option<u64>) -> wasm_encoder::ConstExpr {
     let bits = value.unwrap_or(0);
     match ty {
@@ -1287,5 +1648,34 @@ fn const_init(ty: Type, value: Option<u64>) -> wasm_encoder::ConstExpr {
             wasm_encoder::ConstExpr::ref_null(hty)
         }
         _ => unimplemented!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{segment_layout, SegmentSlot};
+
+    #[test]
+    fn segment_layout_places_preserved_segments_at_their_index() {
+        let slots = segment_layout(vec!['a'], vec![(2, 'Q'), (0, 'P')], 0).unwrap();
+        assert_eq!(
+            slots,
+            vec![
+                SegmentSlot::Preserved('P'),
+                SegmentSlot::Active('a'),
+                SegmentSlot::Preserved('Q'),
+            ]
+        );
+    }
+
+    #[test]
+    fn segment_layout_pads_missing_active_segments() {
+        let slots = segment_layout::<(), _>(vec![], vec![(1, 'P')], 0).unwrap();
+        assert_eq!(slots, vec![SegmentSlot::Empty, SegmentSlot::Preserved('P')]);
+    }
+
+    #[test]
+    fn segment_layout_rejects_duplicate_indices() {
+        assert!(segment_layout(vec!['a'], vec![(1, 'P'), (1, 'Q')], 0).is_err());
     }
 }

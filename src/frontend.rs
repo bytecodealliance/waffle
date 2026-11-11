@@ -89,6 +89,64 @@ fn parse_init_expr<'a>(init_expr: &wasmparser::ConstExpr<'a>) -> Result<Option<u
     })
 }
 
+/// The type of an element segment's elements. Fails for element
+/// types other than `funcref` and typed function references, because
+/// `Type` has no representation for them.
+fn element_type(items: &wasmparser::ElementItems) -> Result<Type> {
+    match items {
+        wasmparser::ElementItems::Functions(_) => Ok(Type::FuncRef),
+        wasmparser::ElementItems::Expressions(ty, _)
+            if *ty == wasmparser::RefType::FUNCREF || ty.type_index().is_some() =>
+        {
+            Ok((*ty).into())
+        }
+        wasmparser::ElementItems::Expressions(ty, _) => bail!(FrontendError::UnsupportedFeature(
+            format!("Unsupported element segment type: {:?}", ty)
+        )),
+    }
+}
+
+/// The functions an element segment refers to, in order, with
+/// `Func::invalid()` for each `ref.null`.
+fn parse_element_items(items: wasmparser::ElementItems) -> Result<Vec<Func>> {
+    Ok(match items {
+        wasmparser::ElementItems::Functions(items) => {
+            let mut funcs = vec![];
+            for item in items {
+                let item = item?;
+                let func = Func::from(item);
+                funcs.push(func);
+            }
+            funcs
+        }
+        wasmparser::ElementItems::Expressions(_, const_exprs) => {
+            let mut funcs = vec![];
+            for const_expr in const_exprs {
+                let const_expr = const_expr?;
+                let mut func = None;
+                for op in const_expr.get_operators_reader() {
+                    let op = op?;
+                    match op {
+                        wasmparser::Operator::End => {}
+                        wasmparser::Operator::RefFunc { function_index } => {
+                            func = Some(Func::from(function_index));
+                        }
+                        wasmparser::Operator::RefNull { .. } => {
+                            func = Some(Func::invalid());
+                        }
+                        _ => bail!(FrontendError::UnsupportedFeature(format!(
+                            "Unsupported element segment item operator: {:?}",
+                            op
+                        ))),
+                    }
+                }
+                funcs.push(func.unwrap_or(Func::invalid()));
+            }
+            funcs
+        }
+    })
+}
+
 #[derive(Default)]
 struct ExtraSections<'a> {
     #[cfg(feature = "dwarf")]
@@ -102,6 +160,39 @@ struct ExtraSections<'a> {
     code_offset: u32,
     #[cfg(not(feature = "dwarf"))]
     _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+/// The largest number of entries that the frontend stores in
+/// `TableData::func_elements`.
+const MAX_TABLE: usize = 100_000;
+
+/// Converts a table's initializer to the value of its entries before
+/// element segments are applied: `None` for a table without an
+/// initializer expression, `Some(func)` for `ref.func func`, and
+/// `Some(Func::invalid())` for `ref.null` of any heap type. Returns
+/// `FrontendError::UnsupportedFeature` for any other initializer
+/// expression.
+fn table_initializer(init: &wasmparser::TableInit) -> Result<Option<Func>> {
+    let expr = match init {
+        wasmparser::TableInit::RefNull => return Ok(None),
+        wasmparser::TableInit::Expr(expr) => expr,
+    };
+    let operators = expr
+        .get_operators_reader()
+        .into_iter()
+        .collect::<Result<Vec<wasmparser::Operator>, _>>()?;
+    match &operators[..] {
+        [wasmparser::Operator::RefFunc { function_index }, wasmparser::Operator::End] => {
+            Ok(Some(Func::from(*function_index)))
+        }
+        [wasmparser::Operator::RefNull { .. }, wasmparser::Operator::End] => {
+            Ok(Some(Func::invalid()))
+        }
+        _ => bail!(FrontendError::UnsupportedFeature(format!(
+            "Unsupported table initializer expression: {:?}",
+            operators
+        ))),
+    }
 }
 
 fn handle_payload<'a>(
@@ -156,6 +247,7 @@ fn handle_payload<'a>(
                                 ty: ty.element_type.into(),
                                 initial: ty.initial,
                                 max: ty.maximum,
+                                initializer: None,
                                 func_elements: Some(vec![]),
                             });
                             ImportKind::Table(table)
@@ -221,11 +313,25 @@ fn handle_payload<'a>(
         Payload::TableSection(reader) => {
             for table in reader {
                 let table = table?;
+                let initializer = table_initializer(&table.init)?;
+                let func_elements = match initializer {
+                    Some(func) if func.is_valid() => {
+                        if table.ty.initial > MAX_TABLE as u64 {
+                            bail!(FrontendError::TooLarge(format!(
+                                "Too many table elements: {:?}",
+                                table.ty.initial
+                            )));
+                        }
+                        vec![func; table.ty.initial as usize]
+                    }
+                    _ => vec![],
+                };
                 module.tables.push(TableData {
                     ty: table.ty.element_type.into(),
                     initial: table.ty.initial,
                     max: table.ty.maximum,
-                    func_elements: Some(vec![]),
+                    initializer,
+                    func_elements: Some(func_elements),
                 });
             }
         }
@@ -276,11 +382,20 @@ fn handle_payload<'a>(
                 });
             }
         }
+        Payload::DataCountSection { .. } => {
+            module.has_data_count = true;
+        }
         Payload::DataSection(reader) => {
-            for segment in reader {
+            module.orig_data_segment_count = reader.count() as usize;
+            for (index, segment) in reader.into_iter().enumerate() {
                 let segment = segment?;
                 match &segment.kind {
-                    DataKind::Passive => {}
+                    DataKind::Passive => {
+                        module.passive_data_segments.push(PassiveDataSegment {
+                            index,
+                            data: segment.data.to_vec(),
+                        });
+                    }
                     DataKind::Active {
                         memory_index,
                         offset_expr,
@@ -391,50 +506,42 @@ fn handle_payload<'a>(
         }
         Payload::Version { .. } => {}
         Payload::ElementSection(reader) => {
-            for element in reader {
+            module.orig_element_segment_count = reader.count() as usize;
+            for (index, element) in reader.into_iter().enumerate() {
                 let element = element?;
                 match &element.kind {
-                    wasmparser::ElementKind::Passive => {}
-                    wasmparser::ElementKind::Declared => {}
+                    wasmparser::ElementKind::Passive => {
+                        module.element_segments.push(ElementSegment {
+                            index,
+                            kind: ElementSegmentKind::Passive,
+                            ty: element_type(&element.items)?,
+                            elements: parse_element_items(element.items)?,
+                        });
+                    }
+                    wasmparser::ElementKind::Declared => {
+                        module.element_segments.push(ElementSegment {
+                            index,
+                            kind: ElementSegmentKind::Declarative,
+                            ty: element_type(&element.items)?,
+                            elements: parse_element_items(element.items)?,
+                        });
+                    }
                     wasmparser::ElementKind::Active {
                         table_index,
                         offset_expr,
                     } => {
                         let table = Table::from(table_index.unwrap_or(0));
-                        let offset = parse_init_expr(&offset_expr)?.unwrap_or(0) as usize;
-                        let funcs = match element.items {
-                            wasmparser::ElementItems::Functions(items) => {
-                                let mut funcs = vec![];
-                                for item in items {
-                                    let item = item?;
-                                    let func = Func::from(item);
-                                    funcs.push(func);
-                                }
-                                funcs
-                            }
-                            wasmparser::ElementItems::Expressions(_, const_exprs) => {
-                                let mut funcs = vec![];
-                                for const_expr in const_exprs {
-                                    let const_expr = const_expr?;
-                                    let mut func = None;
-                                    for op in const_expr.get_operators_reader() {
-                                        let op = op?;
-                                        match op {
-                                            wasmparser::Operator::End => {}
-                                            wasmparser::Operator::RefFunc { function_index } => {
-                                                func = Some(Func::from(function_index));
-                                            }
-                                            wasmparser::Operator::RefNull { .. } => {
-                                                func = Some(Func::invalid());
-                                            }
-                                            _ => panic!("Unsupported table-init op: {:?}", op),
-                                        }
-                                    }
-                                    funcs.push(func.unwrap_or(Func::invalid()));
-                                }
-                                funcs
-                            }
+                        let ty = match &element.items {
+                            wasmparser::ElementItems::Functions(_) => Type::FuncRef,
+                            wasmparser::ElementItems::Expressions(ty, _) => (*ty).into(),
                         };
+                        module.active_element_segments.push(ActiveElementSegment {
+                            index,
+                            table,
+                            ty,
+                        });
+                        let offset = parse_init_expr(&offset_expr)?.unwrap_or(0) as usize;
+                        let funcs = parse_element_items(element.items)?;
 
                         let table_items = module.tables[table].func_elements.as_mut().unwrap();
                         let new_size = offset.checked_add(funcs.len()).ok_or_else(|| {
@@ -445,7 +552,6 @@ fn handle_payload<'a>(
                             ))
                         })?;
                         if new_size > table_items.len() {
-                            static MAX_TABLE: usize = 100_000;
                             if new_size > MAX_TABLE {
                                 bail!(FrontendError::TooLarge(format!(
                                     "Too many table elements: {:?}",
@@ -453,6 +559,16 @@ fn handle_payload<'a>(
                                 )));
                             }
                             table_items.resize(new_size, Func::invalid());
+                        }
+                        for (i, &func) in funcs.iter().enumerate() {
+                            let old = table_items[offset + i];
+                            if old.is_valid() && old != func {
+                                module.overwritten_elements.push(OverwrittenElement {
+                                    table,
+                                    index: offset + i,
+                                    func: old,
+                                });
+                            }
                         }
                         table_items[offset..new_size].copy_from_slice(&funcs[..]);
                     }
@@ -2063,5 +2179,28 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn element_item_global_get_is_unsupported() {
+        let bytes = wat::parse_str(
+            r#"
+            (module
+              (import "m" "g" (global funcref))
+              (table 1 funcref)
+              (elem (i32.const 0) funcref (global.get 0)))
+            "#,
+        )
+        .unwrap();
+        let err = Module::from_wasm_bytes(&bytes, &FrontendOptions::default()).unwrap_err();
+        assert!(matches!(
+            err.downcast::<FrontendError>(),
+            Ok(FrontendError::UnsupportedFeature(_))
+        ));
     }
 }
