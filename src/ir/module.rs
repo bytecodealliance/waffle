@@ -4,9 +4,10 @@ use super::{
 };
 use crate::entity::{EntityRef, EntityVec};
 use crate::ir::{Debug, DebugMap, FunctionBody};
-use crate::{backend, frontend};
+use crate::{backend, frontend, FrontendError};
 use anyhow::Result;
 use std::collections::BTreeMap;
+use std::convert::{TryFrom, TryInto};
 
 pub use crate::frontend::FrontendOptions;
 
@@ -126,25 +127,29 @@ pub struct GlobalData {
     pub mutable: bool,
 }
 
-impl From<&wasmparser::FuncType> for SignatureData {
-    fn from(fty: &wasmparser::FuncType) -> Self {
-        Self {
+impl TryFrom<&wasmparser::FuncType> for SignatureData {
+    type Error = FrontendError;
+
+    fn try_from(fty: &wasmparser::FuncType) -> Result<Self, FrontendError> {
+        Ok(Self {
             params: fty
                 .params()
                 .iter()
-                .map(|&ty| ty.into())
-                .collect::<Vec<Type>>(),
+                .map(|&ty| ty.try_into())
+                .collect::<Result<Vec<Type>, _>>()?,
             returns: fty
                 .results()
                 .iter()
-                .map(|&ty| ty.into())
-                .collect::<Vec<Type>>(),
-        }
+                .map(|&ty| ty.try_into())
+                .collect::<Result<Vec<Type>, _>>()?,
+        })
     }
 }
-impl From<wasmparser::FuncType> for SignatureData {
-    fn from(fty: wasmparser::FuncType) -> Self {
-        (&fty).into()
+impl TryFrom<wasmparser::FuncType> for SignatureData {
+    type Error = FrontendError;
+
+    fn try_from(fty: wasmparser::FuncType) -> Result<Self, FrontendError> {
+        (&fty).try_into()
     }
 }
 
