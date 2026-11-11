@@ -112,13 +112,13 @@ impl<'a> arbitrary::Arbitrary<'a> for ArbitraryModule {
     }
 }
 
-/// Generates a `wasm_smith::Config` from `u` with the proposals turned
-/// off that the frontend rejects or has no representation for.
+/// Generates a `wasm_smith::Config` from `u` with GC, exceptions, tail
+/// calls, memory64, relaxed SIMD and extended constant expressions turned
+/// off.
 fn supported_config(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<wasm_smith::Config> {
     let mut config: wasm_smith::Config = u.arbitrary()?;
     config.gc_enabled = false;
     config.exceptions_enabled = false;
-    config.threads_enabled = false;
     config.tail_call_enabled = false;
     config.memory64_enabled = false;
     config.relaxed_simd_enabled = false;
