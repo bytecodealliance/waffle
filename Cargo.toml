@@ -41,7 +41,7 @@ dwarf = ["dep:addr2line"]
 cli = ["dep:structopt", "dep:env_logger"]
 
 # Enable fuzzing entrypoints.
-fuzzing = ["libfuzzer-sys", "wasm-smith"]
+fuzzing = ["libfuzzer-sys", "wasm-smith", "wasm-smith/wasmparser"]
 
 [[bin]]
 name = "waffle-util"
