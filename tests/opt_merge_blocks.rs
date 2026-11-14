@@ -66,18 +66,18 @@ fn br_br_ret_with_inst() {
         function() ->  {
           block0(v0: i32): # 
             # preds: 
-            # succs: block1 ()
-            br block1()
-          block1(): # 
-            # preds: block0 ()
-            # succs: block2 ()
-            v1 = i32const<42>  # i32  
-            br block2()
-          block2(): # 
-            # preds: block1 ()
             # succs: 
+            v1 = i32const<42>  # i32  
             v2 = i32add v0, v1 # i32  
             return v2
+          block1(): # 
+            # preds: 
+            # succs: 
+            no_terminator
+          block2(): # 
+            # preds: 
+            # succs: 
+            no_terminator
         }
     "#]]
     .assert_eq(&body.display("", None).to_string());
@@ -111,18 +111,18 @@ fn br_br_ret_no_inst() {
         function() ->  {
           block0(v0: i32): # 
             # preds: 
-            # succs: block2 ()
-            br block2()
-          block1(): # 
-            # preds: 
-            # succs: block2 ()
-            br block2()
-          block2(): # 
-            # preds: block0 (), block1 ()
             # succs: 
             v1 = i32const<42>  # i32  
             v2 = i32add v0, v1 # i32  
             return v2
+          block1(): # 
+            # preds: 
+            # succs: 
+            no_terminator
+          block2(): # 
+            # preds: 
+            # succs: 
+            no_terminator
         }
     "#]]
     .assert_eq(&body.display("", None).to_string());
@@ -186,16 +186,16 @@ fn condbr_br_ret() {
         function() ->  {
           block0(v0: i32, v1: i32): # 
             # preds: 
-            # succs: block2 (), block3 ()
-            if v0, block2(), block3()
+            # succs: block1 (), block3 ()
+            if v0, block1(), block3()
           block1(): # 
-            # preds: 
-            # succs: block2 ()
-            br block2()
-          block2(): # 
-            # preds: block0 (), block1 ()
+            # preds: block0 ()
             # succs: 
             return v0
+          block2(): # 
+            # preds: 
+            # succs: 
+            no_terminator
           block3(): # 
             # preds: block0 ()
             # succs: 
