@@ -27,6 +27,7 @@ wasm-smith = { version = "0.248", optional = true }
 [dev-dependencies]
 wat = "1.248.0"
 env_logger = "0.11"
+expect-test = "1.5.1"
 
 [features]
 default = []
