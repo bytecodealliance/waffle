@@ -267,7 +267,10 @@ fn element_padding_is_passive_without_a_funcref_table_0() {
         "#,
     )
     .unwrap();
-    let output = reserialize(&input);
+    let mut module = Module::from_wasm_bytes(&input, &FrontendOptions::default()).unwrap();
+    // This padding applies to indices without a recorded active segment.
+    module.active_element_segments.clear();
+    let output = module.to_wasm_bytes().unwrap();
     validate(&output);
 
     assert_eq!(segments(&output).elements, vec![(Mode::Passive, vec![])]);
@@ -313,4 +316,36 @@ fn element_padding_needs_no_bulk_memory() {
         ElementItems::Functions(reader) => assert_eq!(reader.count(), 0),
         ElementItems::Expressions(..) => panic!("padding uses expressions"),
     }
+}
+
+fn validate_typed(bytes: &[u8]) {
+    let features = WasmFeatures::WASM2 | WasmFeatures::FUNCTION_REFERENCES;
+    if let Err(e) = Validator::new_with_features(features).validate_all(bytes) {
+        panic!("module does not validate: {}", e);
+    }
+}
+
+#[test]
+fn indices_keep_the_element_type_of_their_input_segment() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (type $t (func))
+          (table $f 1 funcref)
+          (table $typed 1 (ref null $t))
+          (elem (table $f) (i32.const 0) (ref null $t) (ref.func $g))
+          (func $g (type $t)
+            (table.init $typed 0 (i32.const 0) (i32.const 0) (i32.const 0))))
+        "#,
+    )
+    .unwrap();
+    let output = reserialize(&input);
+    validate_typed(&output);
+
+    // Index 0 holds an empty `(ref null $t)` segment on `$f`, and the
+    // `funcref` segment for the contents of `$f` follows it.
+    assert_eq!(
+        segments(&output).elements,
+        vec![(Mode::Active, vec![]), (Mode::Active, vec![Some(0)])]
+    );
 }

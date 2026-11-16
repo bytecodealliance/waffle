@@ -277,12 +277,22 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
             )?;
         }
         for (table, table_data) in self.module.tables.entries() {
-            writeln!(f, "  {}: {}", table, table_data.ty)?;
+            match table_data.initializer {
+                Some(func) => writeln!(f, "  {}: {} init {}", table, table_data.ty, func)?,
+                None => writeln!(f, "  {}: {}", table, table_data.ty)?,
+            }
             if let Some(funcs) = &table_data.func_elements {
                 for (i, &func) in funcs.iter().enumerate() {
                     writeln!(f, "    {}[{}]: {}", table, i, func)?;
                 }
             }
+        }
+        for element in &self.module.overwritten_elements {
+            writeln!(
+                f,
+                "  {}[{}]: overwritten {}",
+                element.table, element.index, element.func
+            )?;
         }
         for (memory, memory_data) in self.module.memories.entries() {
             writeln!(
@@ -306,6 +316,13 @@ impl<'a, PD: PrintDecorator> Display for ModuleDisplay<'a, PD> {
                 "  data segment {}: passive # {} bytes",
                 segment.index,
                 segment.data.len()
+            )?;
+        }
+        for segment in &self.module.active_element_segments {
+            writeln!(
+                f,
+                "  elem segment {}: active {} {}",
+                segment.index, segment.table, segment.ty
             )?;
         }
         for segment in &self.module.element_segments {
