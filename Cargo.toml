@@ -29,6 +29,7 @@ wat = "1.248.0"
 # Enables the `WasmFeatures` constants of `waffle::wasmparser` in tests.
 wasmparser = { version = "0.248", default-features = false, features = ["std", "validate", "features"] }
 env_logger = "0.11"
+expect-test = "1.5.1"
 
 [features]
 default = []
