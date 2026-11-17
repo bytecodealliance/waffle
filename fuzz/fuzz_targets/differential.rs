@@ -2,7 +2,7 @@
 use libfuzzer_sys::fuzz_target;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use waffle::{FrontendOptions, Module, OptOptions};
+use waffle::OptOptions;
 
 fuzz_target!(|module: waffle::fuzzing::ArbitraryModule| {
     let module = module.0;
@@ -20,6 +20,9 @@ fuzz_target!(|module: waffle::fuzzing::ArbitraryModule| {
 
     let mut config = wasmtime::Config::default();
     config.consume_fuel(true);
+    // The roundtripped module can declare locals of a typed function
+    // reference type.
+    config.wasm_function_references(true);
     let engine = wasmtime::Engine::new(&config).unwrap();
     let orig_module =
         wasmtime::Module::new(&engine, &orig_bytes[..]).expect("failed to parse original wasm");
@@ -34,9 +37,12 @@ fuzz_target!(|module: waffle::fuzzing::ArbitraryModule| {
         }
     };
 
-    let mut parsed_module =
-        Module::from_wasm_bytes(&orig_bytes[..], &FrontendOptions::default()).unwrap();
-    parsed_module.expand_all_funcs().unwrap();
+    let Some(mut parsed_module) = waffle::fuzzing::parse(&orig_bytes[..]) else {
+        return;
+    };
+    if waffle::fuzzing::skip_unsupported(parsed_module.expand_all_funcs()).is_none() {
+        return;
+    }
     parsed_module.per_func_body(|body| body.optimize(&OptOptions::default()));
     let roundtrip_bytes = parsed_module.to_wasm_bytes().unwrap();
 

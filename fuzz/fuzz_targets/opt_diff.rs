@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-use waffle::{FrontendOptions, InterpContext, InterpResult, Module, OptOptions};
+use waffle::{InterpContext, InterpResult, OptOptions};
 
 fuzz_target!(|module: waffle::fuzzing::ArbitraryModule| {
     let module = module.0;
@@ -17,9 +17,12 @@ fuzz_target!(|module: waffle::fuzzing::ArbitraryModule| {
         log::info!("body: {:?}", module);
     }
 
-    let mut parsed_module =
-        Module::from_wasm_bytes(&orig_bytes[..], &FrontendOptions::default()).unwrap();
-    parsed_module.expand_all_funcs().unwrap();
+    let Some(mut parsed_module) = waffle::fuzzing::parse(&orig_bytes[..]) else {
+        return;
+    };
+    if waffle::fuzzing::skip_unsupported(parsed_module.expand_all_funcs()).is_none() {
+        return;
+    }
 
     let start = parsed_module.start_func.unwrap();
 
