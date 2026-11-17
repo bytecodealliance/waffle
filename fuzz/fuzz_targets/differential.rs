@@ -20,6 +20,9 @@ fuzz_target!(|module: waffle::fuzzing::ArbitraryModule| {
 
     let mut config = wasmtime::Config::default();
     config.consume_fuel(true);
+    // The roundtripped module can declare locals of a typed function
+    // reference type.
+    config.wasm_function_references(true);
     let engine = wasmtime::Engine::new(&config).unwrap();
     let orig_module =
         wasmtime::Module::new(&engine, &orig_bytes[..]).expect("failed to parse original wasm");

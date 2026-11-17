@@ -138,10 +138,12 @@ impl<'a> arbitrary::Arbitrary<'a> for SupportedModule {
 }
 
 /// Validates `bytes` with `wasmparser::Validator` under the features of
-/// the configuration `module` was generated with. Panics with the
-/// validator's message if validation fails.
+/// the configuration `module` was generated with and the function
+/// references proposal. Panics with the validator's message if
+/// validation fails.
 pub fn validate_output(module: &wasm_smith::Module, bytes: &[u8]) {
-    let mut validator = wasmparser::Validator::new_with_features(module.config().features());
+    let features = module.config().features() | wasmparser::WasmFeatures::FUNCTION_REFERENCES;
+    let mut validator = wasmparser::Validator::new_with_features(features);
     if let Err(e) = validator.validate_all(bytes) {
         panic!("Invalid output: {}", e);
     }
