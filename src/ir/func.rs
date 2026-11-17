@@ -360,6 +360,7 @@ impl FunctionBody {
             panic!("Cannot create an alias cycle");
         }
         self.values[value] = ValueDef::Alias(to);
+        self.value_blocks[value] = self.value_blocks[to];
     }
 
     /// Resolve the value through any alias references to the original

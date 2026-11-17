@@ -22,8 +22,10 @@ pub fn run(body: &mut FunctionBody) {
                     // alias bbargs
                     assert_eq!(succ.params.len(), target.args.len());
                     for (&(_, from), &to) in succ.params.iter().zip(target.args.iter()) {
+                        // equivalent to body.set_alias() but without the mutable borrow on body
+                        let to = body.resolve_alias(to);
                         body.values[from] = ValueDef::Alias(to);
-                        body.value_blocks[from] = pred_id;
+                        body.value_blocks[from] = body.value_blocks[to];
                     }
 
                     // update preds of `succ.succs`
