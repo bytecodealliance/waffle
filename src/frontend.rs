@@ -12,7 +12,7 @@ use addr2line::gimli;
 use anyhow::{bail, Result};
 use fxhash::{FxHashMap, FxHashSet};
 use log::trace;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use wasmparser::{BlockType, DataKind, ExternalKind, KnownCustom, Name, Parser, Payload, TypeRef};
 
 /// Options to control the Wasm-to-bytecode translation process.
@@ -98,7 +98,7 @@ fn element_type(items: &wasmparser::ElementItems) -> Result<Type> {
         wasmparser::ElementItems::Expressions(ty, _)
             if *ty == wasmparser::RefType::FUNCREF || ty.type_index().is_some() =>
         {
-            Ok((*ty).into())
+            Ok((*ty).try_into()?)
         }
         wasmparser::ElementItems::Expressions(ty, _) => bail!(FrontendError::UnsupportedFeature(
             format!("Unsupported element segment type: {:?}", ty)
@@ -164,13 +164,14 @@ fn memory_data(ty: &wasmparser::MemoryType) -> Result<MemoryData> {
 }
 
 /// Converts a table type to a `TableData` with no elements. Returns
-/// `FrontendError::UnsupportedFeature` for a 64-bit table.
+/// `FrontendError::UnsupportedFeature` for a 64-bit table and for an
+/// element type that `Type` cannot represent.
 fn table_data(ty: &wasmparser::TableType) -> Result<TableData> {
     if ty.table64 {
         bail!(FrontendError::UnsupportedFeature("64-bit table".into()));
     }
     Ok(TableData {
-        ty: ty.element_type.into(),
+        ty: ty.element_type.try_into()?,
         initial: ty.initial,
         max: ty.maximum,
         initializer: None,
@@ -238,9 +239,14 @@ fn handle_payload<'a>(
         Payload::TypeSection(reader) => {
             for rec_group in reader {
                 for ty in rec_group?.into_types() {
+                    if ty.composite_type.shared {
+                        bail!(FrontendError::UnsupportedFeature(
+                            "shared type in type section".into()
+                        ));
+                    }
                     match &ty.composite_type.inner {
                         wasmparser::CompositeInnerType::Func(fty) => {
-                            module.signatures.push(fty.into());
+                            module.signatures.push(fty.try_into()?);
                         }
                         _ => bail!(FrontendError::UnsupportedFeature(
                             "non-function type in type section".into()
@@ -265,7 +271,7 @@ fn handle_payload<'a>(
                         }
                         TypeRef::Global(ty) => {
                             let mutable = ty.mutable;
-                            let ty = ty.content_type.into();
+                            let ty = ty.content_type.try_into()?;
                             let global = module.globals.push(GlobalData {
                                 ty,
                                 value: None,
@@ -322,7 +328,7 @@ fn handle_payload<'a>(
             for global in reader {
                 let global = global?;
                 let mutable = global.ty.mutable;
-                let ty = global.ty.content_type.into();
+                let ty = global.ty.content_type.try_into()?;
                 let init_expr = parse_init_expr(&global.init_expr)?;
                 module.globals.push(GlobalData {
                     ty,
@@ -549,7 +555,7 @@ fn handle_payload<'a>(
                         let table = Table::from(table_index.unwrap_or(0));
                         let ty = match &element.items {
                             wasmparser::ElementItems::Functions(_) => Type::FuncRef,
-                            wasmparser::ElementItems::Expressions(ty, _) => (*ty).into(),
+                            wasmparser::ElementItems::Expressions(ty, _) => (*ty).try_into()?,
                         };
                         module.active_element_segments.push(ActiveElementSegment {
                             index,
@@ -671,7 +677,7 @@ pub(crate) fn parse_body<'a>(
     for _ in 0..locals.get_count() {
         let (count, ty) = locals.read()?;
         for _ in 0..count {
-            ret.locals.push(ty.into());
+            ret.locals.push(ty.try_into()?);
         }
     }
     let locals = ret.locals.clone();
@@ -900,7 +906,10 @@ impl LocalTracker {
             Type::F32 => body.add_op(at_block, Operator::F32Const { value: 0 }, &[], &[ty]),
             Type::F64 => body.add_op(at_block, Operator::F64Const { value: 0 }, &[], &[ty]),
             Type::V128 => body.add_op(at_block, Operator::V128Const { value: 0 }, &[], &[ty]),
-            _ => todo!("unsupported type: {:?}", ty),
+            Type::FuncRef | Type::ExternRef | Type::TypedFuncRef(true, _) => {
+                body.add_op(at_block, Operator::RefNull { ty }, &[], &[ty])
+            }
+            Type::TypedFuncRef(false, _) => todo!("unsupported type: {:?}", ty),
         };
         log::trace!(
             "created default value {} of type {} at block {}",
@@ -1618,7 +1627,10 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
             | wasmparser::Operator::RefFunc { .. }
             | wasmparser::Operator::MemoryFill { .. }
             | wasmparser::Operator::MemoryCopy { .. } => {
-                self.emit(Operator::try_from(&op).unwrap(), loc)?
+                let op = Operator::try_from(&op).map_err(|()| {
+                    FrontendError::UnsupportedFeature(format!("Unsupported operator: {:?}", op))
+                })?;
+                self.emit(op, loc)?
             }
 
             wasmparser::Operator::Nop => {}
@@ -1851,7 +1863,7 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
             }
 
             wasmparser::Operator::Block { blockty } => {
-                let (params, results) = self.block_params_and_results(*blockty);
+                let (params, results) = self.block_params_and_results(*blockty)?;
                 let out = self.body.add_block();
                 self.add_block_params(out, &results[..]);
                 let start_depth = if self.reachable {
@@ -1869,7 +1881,7 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
             }
 
             wasmparser::Operator::Loop { blockty } => {
-                let (params, results) = self.block_params_and_results(*blockty);
+                let (params, results) = self.block_params_and_results(*blockty)?;
                 let header = self.body.add_block();
                 self.add_block_params(header, &params[..]);
                 let initial_args = if self.reachable {
@@ -1895,7 +1907,7 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
             }
 
             wasmparser::Operator::If { blockty } => {
-                let (params, results) = self.block_params_and_results(*blockty);
+                let (params, results) = self.block_params_and_results(*blockty)?;
                 let if_true = self.body.add_block();
                 let if_false = self.body.add_block();
                 let join = self.body.add_block();
@@ -1983,10 +1995,10 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
         }
     }
 
-    fn block_params_and_results(&self, ty: BlockType) -> (Vec<Type>, Vec<Type>) {
-        match ty {
+    fn block_params_and_results(&self, ty: BlockType) -> Result<(Vec<Type>, Vec<Type>)> {
+        Ok(match ty {
             BlockType::Empty => (vec![], vec![]),
-            BlockType::Type(ret_ty) => (vec![], vec![ret_ty.into()]),
+            BlockType::Type(ret_ty) => (vec![], vec![ret_ty.try_into()?]),
             BlockType::FuncType(sig_idx) => {
                 let sig = &self.module.signatures[Signature::from(sig_idx)];
                 (
@@ -1994,7 +2006,7 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
                     Vec::from(sig.returns.clone()),
                 )
             }
-        }
+        })
     }
 
     fn relative_frame(&mut self, relative_depth: u32) -> &mut Frame {
@@ -2156,7 +2168,12 @@ impl<'a, 'b> FunctionBodyBuilder<'a, 'b> {
         let args = &mut self.body.arg_pool[input_operands];
         for (i, &input) in inputs.into_iter().enumerate().rev() {
             let (stack_top_ty, stack_top) = self.op_stack.pop().unwrap();
-            assert_eq!(stack_top_ty, input);
+            assert!(
+                stack_top_ty.is_subtype_of(input),
+                "operand type {} is not a subtype of {}",
+                stack_top_ty,
+                input
+            );
             args[i] = stack_top;
         }
         log::trace!(" -> operands: {:?}", input_operands);

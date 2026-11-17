@@ -15,7 +15,7 @@
 //! control flow (these become `Terminator` instructions).
 
 use crate::{entity::EntityRef, Func, Global, Memory, Signature, Table, Type};
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 pub use wasmparser::{Ieee32, Ieee64};
 
 /// An argument to a memory load or store, specifying which memory,
@@ -660,8 +660,10 @@ pub enum Operator {
         sig_index: Signature,
     },
     RefIsNull,
+    /// `ty` is the result type: `FuncRef`, `ExternRef`, or a nullable
+    /// `TypedFuncRef`.
     RefNull {
-        sig_index: Signature,
+        ty: Type,
     },
     RefFunc {
         func_index: Func,
@@ -695,9 +697,9 @@ impl<'a, 'b> std::convert::TryFrom<&'b wasmparser::Operator<'a>> for Operator {
             &wasmparser::Operator::LocalTee { .. } => Err(()),
             &wasmparser::Operator::LocalGet { .. } => Err(()),
             &wasmparser::Operator::Select => Ok(Operator::Select),
-            &wasmparser::Operator::TypedSelect { ty } => {
-                Ok(Operator::TypedSelect { ty: ty.into() })
-            }
+            &wasmparser::Operator::TypedSelect { ty } => Ok(Operator::TypedSelect {
+                ty: ty.try_into().map_err(|_| ())?,
+            }),
             &wasmparser::Operator::GlobalGet { global_index } => Ok(Operator::GlobalGet {
                 global_index: Global::from(global_index),
             }),
@@ -1306,11 +1308,12 @@ impl<'a, 'b> std::convert::TryFrom<&'b wasmparser::Operator<'a>> for Operator {
                 sig_index: Signature::from(type_index),
             }),
             &wasmparser::Operator::RefIsNull => Ok(Operator::RefIsNull),
-            &wasmparser::Operator::RefNull {
-                hty: wasmparser::HeapType::Concrete(wasmparser::UnpackedIndex::Module(sig)),
-            } => Ok(Operator::RefNull {
-                sig_index: Signature::from(sig),
-            }),
+            &wasmparser::Operator::RefNull { hty } => {
+                let ty = wasmparser::RefType::new(true, hty).ok_or(())?;
+                Ok(Operator::RefNull {
+                    ty: ty.try_into().map_err(|_| ())?,
+                })
+            }
             &wasmparser::Operator::RefFunc { function_index } => Ok(Operator::RefFunc {
                 func_index: Func::from(function_index),
             }),
